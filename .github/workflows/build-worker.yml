@@ -52,17 +52,16 @@ jobs:
           cd worker
           npx rollup -c
 
-      - name: Create build branch
+      - name: Create clean build branch with only bundle.js
         run: |
           cd worker
-          git checkout -B build
+          # 创建一个孤立的分支，只包含 bundle.js
+          git checkout --orphan build
+          git rm -rf . > /dev/null 2>&1 || echo "No files to remove"
           cp dist/bundle.js bundle.js
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add bundle.js
-          git commit -m "Auto-build: Single file bundle" || echo "No changes to commit"
-          # 使用更安全的推送方式代替强制推送
-          git push origin build
+          git -c user.name='github-actions[bot]' -c user.email='github-actions[bot]@users.noreply.github.com' commit -m "Auto-build: Single file bundle"
+          git push -f origin build
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
