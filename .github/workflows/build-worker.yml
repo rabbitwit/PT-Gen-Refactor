@@ -25,7 +25,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          # 不设置缓存参数，禁用自动缓存
 
       - name: Generate package-lock.json if not exists
         run: |
@@ -54,17 +53,27 @@ jobs:
 
       - name: Create clean build branch with only bundle.js
         run: |
-          cd worker
-          # 创建一个孤立的分支，只包含 bundle.js
+          # 先切换回主分支
+          git checkout main
+          # 删除远程的build分支（如果存在）
+          git push origin --delete build || echo "No remote build branch to delete"
+          # 创建一个孤立的build分支
           git checkout --orphan build
-          git rm -rf . > /dev/null 2>&1 || echo "No files to remove"
-          cp dist/bundle.js bundle.js
+          # 删除所有已跟踪的文件
+          git rm -rf --cached .
+          # 删除工作目录中的所有文件（除了bundle.js我们稍后会添加）
+          rm -rf *
+          # 从worker/dist目录复制bundle.js到根目录
+          cp worker/dist/bundle.js bundle.js
+          # 添加bundle.js到git
           git add bundle.js
+          # 提交
           git -c user.name='github-actions[bot]' -c user.email='github-actions[bot]@users.noreply.github.com' commit -m "Auto-build: Single file bundle"
-          git push -f origin build
+          # 推送到远程
+          git push -u origin build
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: worker-bundle
-          path: worker/bundle.js
+          path: worker/dist/bundle.js
