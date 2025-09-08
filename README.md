@@ -3,10 +3,9 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/license/rabbitwit/PT-Gen-Refactor" alt="License">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
   <img src="https://img.shields.io/github/languages/top/rabbitwit/PT-Gen-Refactor" alt="GitHub top language">
-  <img src="https://img.shields.io/github/commit-activity/m/rabbitwit/PT-Gen-Refactor" alt="GitHub commit activity">
-  <img src="https://img.shields.io/github/search/rabbitwit/PT-Gen-Refactor/used" alt="Used">
+  <img src="https://img.shields.io/github/search/rabbitwit/PT-Gen-Refactor/goto" alt="Used">
 </p>
 
 ## 关于PT-Gen-Refactor
