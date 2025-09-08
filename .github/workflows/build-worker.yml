@@ -20,8 +20,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          # 禁用自动缓存，我们会在后续步骤中手动处理
-          cache: 'none'
+          # 不设置缓存参数，禁用自动缓存
 
       - name: Generate package-lock.json if not exists
         run: |
