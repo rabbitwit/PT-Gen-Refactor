@@ -22,6 +22,16 @@ jobs:
           node-version: '18'
           cache: 'npm'
 
+      - name: Generate package-lock.json if not exists
+        run: |
+          cd worker
+          if [ ! -f package-lock.json ]; then
+            echo "package-lock.json not found, generating one..."
+            npm install --package-lock-only
+          else
+            echo "package-lock.json found"
+          fi
+
       - name: Install dependencies
         run: |
           cd worker
