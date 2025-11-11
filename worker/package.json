@@ -1,6 +1,7 @@
 {
   "name": "pt-gen-refactor",
-  "version": "1.0.1",
+  "author": "Hares",
+  "version": "1.0.2",
   "description": "Cloudflare Worker for PT-Gen Refactor",
   "main": "index.js",
   "scripts": {
@@ -12,7 +13,6 @@
     "cloudflare",
     "worker"
   ],
-  "author": "PT-Gen Team",
   "license": "MIT",
   "devDependencies": {
     "wrangler": "^4.33.0",

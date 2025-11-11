@@ -2,7 +2,7 @@ import * as cheerio from 'cheerio'; // HTML页面解析
 
 // 常量定义
 export const AUTHOR = "Hares";
-export const VERSION = "1.0.0";
+export const VERSION = "1.0.2";
 export const NONE_EXIST_ERROR = "The corresponding resource does not exist.";
 
 // 预编译正则表达式以提高性能并增强鲁棒性
@@ -21,7 +21,7 @@ const DEFAULT_BODY_TEMPLATE = Object.freeze({
  * 解析HTML页面为 cheerio 实例
  * 支持 string 或 Buffer 输入
  * @param {string|Buffer} responseText
- * @returns {CheerioAPI}
+ * @returns {cheerio}
  */
 export function page_parser(responseText) {
   // 兼容多种运行时：Node Buffer / ArrayBuffer / TypedArray / string

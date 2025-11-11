@@ -2,17 +2,18 @@ import { NONE_EXIST_ERROR, page_parser, jsonp_parser } from "./common.js";
 
 const DEFAULT_TIMEOUT = 15000;
 const REQUEST_HEADERS_BASE = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
   'Accept-Language': 'zh-CN,zh;q=0.9,en-US;q=0.8',
   'Accept-Encoding': 'gzip, deflate, br, zstd',
+  'Cache-control': 'max-age=0',
   'Connection': 'keep-alive',
   'Upgrade-Insecure-Requests': '1',
   'Sec-Fetch-Dest': 'document',
   'Sec-Fetch-Mode': 'navigate',
   'Sec-Fetch-Site': 'none',
   'Sec-Fetch-User': '?1',
-  'sec-ch-ua': '"Not;A=Brand";v="99", "Google Chrome";v="139", "Chromium";v="139"',
+  'sec-ch-ua': '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
   'sec-ch-ua-mobile': '?0',
   'sec-ch-ua-platform': '"Windows"'
 };
@@ -189,7 +190,8 @@ export async function gen_douban(sid, env) {
         awards = $aw("#content > div > div.article").html() || '';
         if (awards) {
           awards = awards.replace(/[\s\n]+/g, ' ').replace(/<\/li><li>/g, "</li> <li>").replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
-          data.awards = awards;
+          // 将awards字符串分割成数组
+          data.awards = awards.split(/\s*[\/>\n]\s*/).filter(item => item.trim().length > 0).map(item => item.trim());
         }
       }
     } catch (e) { /* ignore */ }
@@ -245,8 +247,8 @@ export async function gen_douban(sid, env) {
     }
 
     if (data.tags && data.tags.length) descr += `\n❁ 标　　签:　${data.tags.join(" | ")}\n`;
-    if (data.introduction) descr += `\n❁ 简　　介\n\n　　${data.introduction.replace(/\n/g, "\n　　")}\n`;
-    if (awards) descr += `\n❁ 获奖情况\n\n　　${awards.replace(/\n/g, "\n　　")}\n`;
+    if (data.introduction) descr += `❁ 简　　介　　${data.introduction.replace(/\n/g, "\n　　")}`;
+    if (awards) descr += `❁ 获奖情况　　${awards.replace(/\n/g, "\n　　")}`;
 
     data.format = descr.trim();
     data.success = true;
