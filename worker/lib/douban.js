@@ -190,22 +190,29 @@ export async function gen_douban(sid, env) {
         
         // 根据实际HTML结构调整解析逻辑
         const awardItems = [];
-        $aw('.mod').each(function() {
-          const $mod = $aw(this);
+        // 遍历每个awards区块
+        $aw('.awards').each(function() {
+          const $awards = $aw(this);
+          // 提取电影节名称和年份
+          const $hd = $awards.find('.hd h2');
+          const festival = $hd.find('a').text().trim();
+          const year = $hd.find('.year').text().trim();
+          
+          // 组合电影节完整名称
+          const festivalFull = `${festival} ${year}`;
+          
           // 遍历每个award列表
-          $mod.find('ul.award').each(function() {
+          $awards.find('ul.award').each(function() {
             const $ul = $aw(this);
             const items = $ul.find('li');
             if (items.length >= 2) {
-              // 提取电影节名称
-              const festival = $aw(items[0]).text().trim();
               // 提取奖项类别
-              const category = $aw(items[1]).text().trim();
+              const category = $aw(items[0]).text().trim();
               // 提取获奖者（如果有）
-              const winners = $aw(items[2]).text().trim();
+              const winners = $aw(items[1]).text().trim();
               
               // 组合完整信息
-              let fullInfo = `${festival} ${category}`;
+              let fullInfo = `${festivalFull} ${category}`;
               if (winners) {
                 fullInfo += ` ${winners}`;
               }
@@ -214,19 +221,8 @@ export async function gen_douban(sid, env) {
           });
         });
         
-        if (awardItems.length > 0) {
-          data.awards = awardItems;
-          awards = awardItems.join('\n');
-        } else {
-          // 如果上面的方法没有提取到数据，使用备用方案
-          const $article = $aw("#content > div > div.article");
-          awards = $article.text() || '';
-          if (awards) {
-            // 直接从文章内容中提取文本，并按行分割为数组
-            data.awards = awards.split('\n').map(item => item.trim()).filter(item => item.length > 0);
-            awards = data.awards.join('\n');
-          }
-        }
+        data.awards = awardItems;
+        awards = awardItems.join('\n');
       }
     } catch (e) { 
       console.error('Awards parsing error:', e);
