@@ -11,6 +11,57 @@ body {
   box-sizing: border-box;
 }
 
+/* 修复移动浏览器中输入框不显示光标的问题 */
+.form-control {
+  display: block;
+  width: 100%;
+  height: 34px;
+  padding: 6px 12px;
+  font-size: 14px;
+  line-height: 1.42857143;
+  color: #555;
+  background-color: #fff;
+  background-image: none;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  box-shadow: inset 0 1px 1px rgba(0,0,0,.075);
+  /* 关键修复：确保在移动设备上正确显示光标 */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
+
+.form-control:focus {
+  border-color: #66afe9;
+  outline: 0;
+  box-shadow: inset 0 1px 1px rgba(0,0,0,.075), 0 0 8px rgba(102,175,233,.6);
+  /* 移动端特殊处理 */
+  -webkit-user-modify: read-write-plaintext-only;
+}
+
+/* 针对移动端的特殊输入框样式 */
+@media screen and (max-width: 768px) {
+  .form-control {
+    /* 确保在移动设备上有足够的触摸目标 */
+    min-height: 44px;
+    height: auto;
+    padding: 10px 12px;
+    /* 修复某些移动浏览器中的光标问题 */
+    -webkit-user-select: auto;
+    -moz-user-select: auto;
+    -ms-user-select: auto;
+    user-select: auto;
+    /* 确保光标可见 */
+    caret-color: #555;
+  }
+  
+  #url {
+    /* 特别针对URL输入框 */
+    caret-color: #555;
+    -webkit-user-modify: read-write-plaintext-only;
+  }
+}
+
 .container {
   margin-right: auto;
   margin-left: auto;
@@ -106,27 +157,6 @@ body {
 .form-group {
   display: flex;
   flex: 1;
-}
-
-.form-control {
-  display: block;
-  width: 100%;
-  height: 34px;
-  padding: 6px 12px;
-  font-size: 14px;
-  line-height: 1.42857143;
-  color: #555;
-  background-color: #fff;
-  background-image: none;
-  border: 1px solid #ccc;
-  border-radius: 4px;
-  box-shadow: inset 0 1px 1px rgba(0,0,0,.075);
-}
-
-.form-control:focus {
-  border-color: #66afe9;
-  outline: 0;
-  box-shadow: inset 0 1px 1px rgba(0,0,0,.075), 0 0 8px rgba(102,175,233,.6);
 }
 
 .form-actions {
