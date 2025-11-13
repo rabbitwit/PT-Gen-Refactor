@@ -565,7 +565,7 @@ async function handleUrlRequest(url_, env) {
     const sid_match = url_.match(/\/album\/detail\.htm\?albumId=(\d+)/);
     if (sid_match) {
       const sid = `album/${sid_match[1]}`;
-      resourceId = `melon_${sid}`;
+      resourceId = `melon_${sid.replace(/\//g, '__')}`;
     }
   } else if (url_.includes("://bgm.tv/") || url_.includes("://bangumi.tv/")) {
     // Bangumi
@@ -580,7 +580,7 @@ async function handleUrlRequest(url_, env) {
       resourceId = `steam_${sid}`;
     }
   }
-  
+    
   // 检查R2中是否已有缓存数据
   if (resourceId && env.R2_BUCKET) {
     try {
@@ -966,7 +966,7 @@ async function handleQueryRequest(request, env, uri) {
           resourceId = `bgm_${sid}`;
           break;
         case 'melon':
-          resourceId = `melon_${sid}`;
+          resourceId = `melon_${sid.replace(/\//g, '__')}`;
           break;
         case 'steam':
           resourceId = `steam_${sid}`;
@@ -1010,7 +1010,8 @@ async function handleQueryRequest(request, env, uri) {
             response_data = await gen_bangumi(sid, env);
             break;
           case 'melon':
-            response_data = await gen_melon(sid, env);
+            const decodedMelonSid = String(sid).replace(/__/g, '/');
+            response_data = await gen_melon(decodedMelonSid, env);
             break;
           case 'steam':
             response_data = await gen_steam(sid, env);
@@ -1047,7 +1048,6 @@ async function handleQueryRequest(request, env, uri) {
 
 // 处理主API响应
 async function handleRequest(request, env) {
-  // 检查是否为OPTIONS请求（预检请求）
   if (request.method === 'OPTIONS') {
     return new Response(null, {
       status: 204,
