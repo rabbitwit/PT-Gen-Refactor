@@ -32,7 +32,7 @@
 ## 功能特性
 
 - 支持从多个平台获取媒体信息：
-  - 豆瓣 (Douban)
+  - 豆瓣 (Douban) - 增强版，支持演员/导演图片信息获取
   - IMDb (Internet Movie Database)
   - TMDB (The Movie Database)
   - Bangumi (番组计划)
@@ -219,16 +219,16 @@ Published pt-gen-refactor (0.3 seconds)
 3. 将该文件直接上传到 Cloudflare Worker 控制台，或直接复制代码到 Cloudflare Worker 控制台。
 4. 在变量和机密的设置中添加所需的环境变量。
 
-## API 接口
+## API 接口 (所有的接口请求是"POST")
 
 ### URL 参数方式（只部署后端）
 直接解析特定平台的资源链接:
-- `/?url=https://movie.douban.com/subject/123456/` - 解析豆瓣资源
+- `/?url=https://movie.douban.com/subject/123456/` - 解析豆瓣资源（包含演员/导演图片）
 - `/?url=https://www.imdb.com/title/tt123456/` - 解析 IMDb 资源
 - `/?url=https://www.themoviedb.org/movie/123456` - 解析 TMDB 资源
 
 ### URL 参数方式（前后端一起部署,后端的API则是以下的）
-- `/api?url=https://movie.douban.com/subject/123456/` - 解析豆瓣资源
+- `/api?url=https://movie.douban.com/subject/123456/` - 解析豆瓣资源（包含演员/导演图片）
 - `/api?url=https://www.imdb.com/title/tt123456/` - 解析 IMDb 资源
 - `/api?url=https://www.themoviedb.org/movie/123456` - 解析 TMDB 资源
 
@@ -242,8 +242,14 @@ Published pt-gen-refactor (0.3 seconds)
 6. **R2 缓存功能**：系统会自动将抓取的数据存储在 R2 中，下次请求相同资源时会直接从缓存中读取，提高响应速度并减少源站压力。
 7. 启动应用后，访问前端地址 (默认 https://pt-gen-refactor.your-subdomain.workers.dev)
 8. 输入媒体资源的链接或 ID
-9. 系统将自动获取并生成标准 PT 描述
+9. 系统将自动获取并生成标准 PT 描述（豆瓣资源包含演员/导演图片信息）
 10. 复制生成的描述用于 PT 站点发布
+
+## 新增功能亮点
+
+- **豆瓣信息增强**：豆瓣资源现在包含演员和导演的图片信息
+- **更丰富的元数据**：提供更完整的媒体信息用于PT站点发布
+- **性能优化**：改进了数据抓取和处理逻辑
 
 ## 感谢
 

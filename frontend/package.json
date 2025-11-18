@@ -2,7 +2,7 @@
   "name": "pt-gen-frontend",
   "author": "Hares",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -1,6 +1,5 @@
-import { NONE_EXIST_ERROR, page_parser, jsonp_parser } from "./common.js";
+import { NONE_EXIST_ERROR, DEFAULT_TIMEOUT, page_parser, jsonp_parser, fetchWithTimeout, generateDoubanFormat } from "./common.js";
 
-const DEFAULT_TIMEOUT = 15000;
 const REQUEST_HEADERS_BASE = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -17,27 +16,42 @@ const REQUEST_HEADERS_BASE = {
   'sec-ch-ua-mobile': '?0',
   'sec-ch-ua-platform': '"Windows"'
 };
+const safe = (v, fallback = '') => (v === undefined || v === null ? fallback : v);
 
-function buildHeaders(env = {}) {
+/**
+ * 构建请求头对象
+ * @param {Object} env - 环境变量对象，可选
+ * @param {string} env.DOUBAN_COOKIE - 豆瓣Cookie值
+ * @returns {Object} 包含基础请求头和可选Cookie的请求头对象
+ */
+const buildHeaders = (env = {}) => {
   const h = { ...REQUEST_HEADERS_BASE };
   if (env?.DOUBAN_COOKIE) h['Cookie'] = env.DOUBAN_COOKIE;
   return h;
-}
+};
 
-async function fetchWithTimeout(url, opts = {}, timeout = DEFAULT_TIMEOUT) {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeout);
+const fetch_anchor = anchor => {
   try {
-    const res = await fetch(url, { ...opts, signal: controller.signal });
-    return res;
-  } finally {
-    clearTimeout(id);
-  }
-}
+    if (!anchor || !anchor[0]) return '';
+      const ns = anchor[0].nextSibling;
+      if (ns && ns.nodeValue) return ns.nodeValue.trim();
+      const parent = anchor.parent();
+      if (parent && parent.length) {
+        const txt = parent.text().replace(anchor.text(), '').trim();
+        return txt;
+      }
+  } catch (e) { /* ignore */ }
+  return '';
+};
 
-const safe = (v, fallback = '') => (v === undefined || v === null ? fallback : v);
-
-export async function gen_douban(sid, env) {
+/**
+ * 异步生成指定豆瓣ID对应的影视信息数据
+ * @param {string|number} sid - 豆瓣电影的唯一标识符
+ * @param {object} env - 环境配置对象，用于获取DOUBAN_COOKIE等配置
+ * @returns {Promise<object>} 返回一个包含豆瓣数据的对象，包括基础信息、演员表、评分等，
+ *                           若发生错误则返回带有error字段的失败信息
+ */
+export const gen_douban = async (sid, env) => {
   const data = { site: "douban", sid };
   if (!sid) return Object.assign(data, { error: "Invalid Douban id" });
 
@@ -46,14 +60,16 @@ export async function gen_douban(sid, env) {
   const mobileLink = `https://m.douban.com/movie/subject/${encodeURIComponent(sid)}/`;
 
   try {
-    // 1) 请求主页面，遇到非 200 自动尝试移动端回退
+    // 请求主页面，遇到非 200 自动尝试移动端回退
     let resp = await fetchWithTimeout(baseLink, { headers }, DEFAULT_TIMEOUT);
     if (!resp || (resp.status === 204 || resp.status === 403 || resp.status === 521 || resp.status === 521)) {
       // 尝试移动端页面回退
       try {
         const mresp = await fetchWithTimeout(mobileLink, { headers }, DEFAULT_TIMEOUT);
         if (mresp && mresp.ok) resp = mresp;
-      } catch (e) { /* ignore */ }
+      } catch (e) { 
+        console.warn(`Failed to fetch mobile page for ${sid}:`, e);
+      }
     }
 
     if (!resp) return Object.assign(data, { error: "No response from Douban" });
@@ -75,48 +91,40 @@ export async function gen_douban(sid, env) {
       return Object.assign(data, { error: "Douban blocked request (captcha/anti-bot). Provide valid cookie or try later." });
     }
 
-    // 解析 DOM
     const $ = page_parser(raw);
-
-    // 解析 ld+json（更可靠）
     let ld_json = {};
     try {
       const script = $('head > script[type="application/ld+json"]').html();
       if (script) {
-        // 去除换行并解析
         const cleaned = script.replace(/(\r\n|\n|\r|\t)/g, '');
         ld_json = JSON.parse(cleaned);
       }
     } catch (e) {
-      // ignore parse errors
       ld_json = {};
     }
 
-    // 常用字段初始化
-    data.douban_link = baseLink;
     const title = $("title").text().replace("(豆瓣)", "").trim();
-    data.chinese_title = safe(title, '');
-    data.foreign_title = safe($('span[property="v:itemreviewed"]').text().replace(data.chinese_title, "").trim(), '');
-
-    // helper 获取 info 行后的文本
-    const fetch_anchor = anchor => {
-      try {
-        if (!anchor || !anchor[0]) return '';
-        // nextSibling nodeValue contains the value in many cases
-        const ns = anchor[0].nextSibling;
-        if (ns && ns.nodeValue) return ns.nodeValue.trim();
-        // fallback: anchor parent text after label
-        const parent = anchor.parent();
-        if (parent && parent.length) {
-          const txt = parent.text().replace(anchor.text(), '').trim();
-          return txt;
-        }
-      } catch (e) { /* ignore */ }
-      return '';
-    };
-
-    // 又名
     const aka_anchor = $('#info span.pl:contains("又名")');
+    const regions_anchor = $('#info span.pl:contains("制片国家/地区")');
+    const language_anchor = $('#info span.pl:contains("语言")');
+    const playdate_nodes = $("#info span[property=\"v:initialReleaseDate\"]");
+    const episodes_anchor = $('#info span.pl:contains("集数")');
+    const duration_anchor = $('#info span.pl:contains("单集片长")');
+    const intro_selector = '#link-report-intra > span.all.hidden, #link-report-intra > [property="v:summary"], #link-report > span.all.hidden, #link-report > [property="v:summary"]';
+    const intro_el = $(intro_selector);
+    const tag_another = $('div.tags-body > a[href^="/tag"]');
+    const rating_info = ld_json.aggregateRating || {};
+    const page_rating_average = $('#interest_sectl .rating_num').text().trim();
+    const page_votes = $('#interest_sectl span[property="v:votes"]').text().trim();
+    const douban_avg = safe(rating_info.ratingValue || page_rating_average || '0', '0');
+    const douban_votes = safe(rating_info.ratingCount || page_votes || '0', '0');
+    const imdb_anchor = $('#info span.pl:contains("IMDb")');
+    const awardsReq = fetchWithTimeout(`${baseLink}awards`, { headers }, 8000).catch(() => null);
+
+    if (tag_another.length > 0) {
+      data.tags = tag_another.map(function () { return $(this).text().trim(); }).get();
+    } 
+
     if (aka_anchor.length > 0) {
       const aka_text = fetch_anchor(aka_anchor);
       if (aka_text) {
@@ -125,48 +133,107 @@ export async function gen_douban(sid, env) {
       }
     }
 
-    // 年份 / 地区 / 类型 / 语言 / 放映日 / 集数 / 单集片长
+    data.douban_link = baseLink;
+    data.chinese_title = safe(title, '');
+    data.foreign_title = safe($('span[property="v:itemreviewed"]').text().replace(data.chinese_title, "").trim(), '');
     data.year = safe($("#content > h1 > span.year").text().match(/\d{4}/)?.[0] || "", "");
-    const regions_anchor = $('#info span.pl:contains("制片国家/地区")');
     data.region = regions_anchor.length ? fetch_anchor(regions_anchor).split(" / ").map(s => s.trim()).filter(Boolean) : [];
     data.genre = $("#info span[property=\"v:genre\"]").map(function () { return $(this).text().trim(); }).get();
-    const language_anchor = $('#info span.pl:contains("语言")');
     data.language = language_anchor.length ? fetch_anchor(language_anchor).split(" / ").map(s => s.trim()).filter(Boolean) : [];
-    const playdate_nodes = $("#info span[property=\"v:initialReleaseDate\"]");
     data.playdate = playdate_nodes.length ? playdate_nodes.map(function(){ return $(this).text().trim(); }).get().sort((a,b)=>new Date(a)-new Date(b)) : [];
-    const episodes_anchor = $('#info span.pl:contains("集数")');
     data.episodes = episodes_anchor.length ? fetch_anchor(episodes_anchor) : "";
-    const duration_anchor = $('#info span.pl:contains("单集片长")');
     data.duration = duration_anchor.length ? fetch_anchor(duration_anchor) : ($("#info span[property=\"v:runtime\"]").text().trim() || "");
-
-    // 简介（优先隐藏展开内容）
-    const intro_selector = '#link-report-intra > span.all.hidden, #link-report-intra > [property="v:summary"], #link-report > span.all.hidden, #link-report > [property="v:summary"]';
-    const intro_el = $(intro_selector);
     data.introduction = intro_el.length ? intro_el.text().split('\n').map(s=>s.trim()).filter(Boolean).join('\n') : '';
-
-    // poster / director / writer / cast via ld_json 回退到页面元素
     data.poster = ld_json.image ? String(ld_json.image).replace(/s(_ratio_poster|pic)/g, "l$1").replace("img3", "img1").replace(/\.webp$/, ".jpg") : '';
     data.director = ld_json.director ? (Array.isArray(ld_json.director) ? ld_json.director : [ld_json.director]) : [];
     data.writer = ld_json.author ? (Array.isArray(ld_json.author) ? ld_json.author : [ld_json.author]) : [];
     data.cast = ld_json.actor ? (Array.isArray(ld_json.actor) ? ld_json.actor : [ld_json.actor]) : [];
-
-    // tags
-    const tag_another = $('div.tags-body > a[href^="/tag"]');
-    if (tag_another.length > 0) data.tags = tag_another.map(function () { return $(this).text().trim(); }).get();
-
-    // 评分：优先 ld_json，再尝试页面元素
-    const rating_info = ld_json.aggregateRating || {};
-    const page_rating_average = $('#interest_sectl .rating_num').text().trim();
-    const page_votes = $('#interest_sectl span[property="v:votes"]').text().trim();
-
-    const douban_avg = safe(rating_info.ratingValue || page_rating_average || '0', '0');
-    const douban_votes = safe(rating_info.ratingCount || page_votes || '0', '0');
     data.douban_rating_average = douban_avg;
     data.douban_votes = douban_votes;
-    data.douban_rating = (parseFloat(douban_avg) > 0 && parseInt(douban_votes) > 0) ? `${douban_avg}/10 from ${douban_votes} users` : '0/10 from 0 users';
+    data.douban_rating = (parseFloat(douban_avg) > 0 && parseInt(douban_votes) > 0) ? `${douban_avg} / 10 from ${douban_votes} users` : '0 / 10 from 0 users';
 
-    // IMDb: 尝试从页面抓取 IMDb id，再请求 imdb JSONP
-    const imdb_anchor = $('#info span.pl:contains("IMDb")');
+    const celebrities = [];
+    $('#celebrities .celebrities-list li.celebrity').each(function() {
+      const $celebrity = $(this);
+      const name = $celebrity.find('.info .name a').text().trim();
+      const link = $celebrity.find('.info .name a').attr('href');
+      const role = $celebrity.find('.info .role').text().trim();
+      const avatarStyle = $celebrity.find('.avatar').attr('style');
+      let avatar = '';
+      
+      if (avatarStyle) {
+        const match = avatarStyle.match(/url\(["']?(.*?)["']?\)/);
+        if (match && match[1]) {
+          avatar = match[1];
+        }
+      }
+      
+      celebrities.push({
+        name,
+        link,
+        role,
+        avatar
+      });
+    });
+
+    const celebrityMap = new Map();
+    celebrities.forEach(celebrity => {
+      celebrityMap.set(celebrity.name, celebrity);
+
+      const chineseName = celebrity.name.split(' ')[0];
+      if (chineseName !== celebrity.name) {
+        celebrityMap.set(chineseName, celebrity);
+      }
+    });
+
+    if (data.director && data.director.length > 0) {
+      data.director = data.director.map(director => {
+        let originalName = '';
+        if (typeof director === 'string') {
+          originalName = director;
+          director = { name: director };
+        } else if (director.name) {
+          originalName = director.name;
+        }
+
+        let detailedInfo = celebrityMap.get(originalName);
+
+        if (!detailedInfo) {
+          const chineseName = originalName.split(' ')[0];
+          detailedInfo = celebrityMap.get(chineseName);
+        }
+        
+        if (detailedInfo) {
+          return { ...director, link: detailedInfo.link, role: detailedInfo.role, avatar: detailedInfo.avatar };
+        }
+        return director;
+      });
+    }
+
+    if (data.cast && data.cast.length > 0) {
+      data.cast = data.cast.map(actor => {
+        let originalName = '';
+        if (typeof actor === 'string') {
+          originalName = actor;
+          actor = { name: actor };
+        } else if (actor.name) {
+          originalName = actor.name;
+        }
+        
+        let detailedInfo = celebrityMap.get(originalName);
+        
+        if (!detailedInfo) {
+          const chineseName = originalName.split(' ')[0];
+          detailedInfo = celebrityMap.get(chineseName);
+        }
+        
+        if (detailedInfo) {
+          return { ...actor, link: detailedInfo.link, role: detailedInfo.role, avatar: detailedInfo.avatar };
+        }
+        return actor;
+      });
+    }
+
     let imdb_api_req = null;
     if (imdb_anchor.length > 0) {
       const imdb_id = fetch_anchor(imdb_anchor).trim();
@@ -179,39 +246,28 @@ export async function gen_douban(sid, env) {
       }
     }
 
-    // 异步请求 awards 页面与 IMDb（并行）
-    const awardsReq = fetchWithTimeout(`${baseLink}awards`, { headers }, 8000).catch(() => null);
-    let awards = '';
     try {
+      let awards = '';
       const awardsResp = await awardsReq;
       if (awardsResp && awardsResp.ok) {
         const awardsRaw = await awardsResp.text();
         const $aw = page_parser(awardsRaw);
-        
-        // 根据实际HTML结构调整解析逻辑
         const awardItems = [];
-        // 遍历每个awards区块
+
         $aw('.awards').each(function() {
           const $awards = $aw(this);
-          // 提取电影节名称和年份
           const $hd = $awards.find('.hd h2');
           const festival = $hd.find('a').text().trim();
           const year = $hd.find('.year').text().trim();
-          
-          // 组合电影节完整名称
           const festivalFull = `${festival} ${year}`;
           
-          // 遍历每个award列表
           $awards.find('ul.award').each(function() {
             const $ul = $aw(this);
             const items = $ul.find('li');
             if (items.length >= 2) {
-              // 提取奖项类别
               const category = $aw(items[0]).text().trim();
-              // 提取获奖者（如果有）
               const winners = $aw(items[1]).text().trim();
               
-              // 组合完整信息
               let fullInfo = `${festivalFull} ${category}`;
               if (winners) {
                 fullInfo += ` ${winners}`;
@@ -226,10 +282,8 @@ export async function gen_douban(sid, env) {
       }
     } catch (e) { 
       console.error('Awards parsing error:', e);
-      /* ignore */ 
     }
 
-    // 处理 IMDb JSONP 响应
     if (imdb_api_req) {
       try {
         const imdbResp = await imdb_api_req;
@@ -241,60 +295,18 @@ export async function gen_douban(sid, env) {
             const votes = imdb_json.resource.ratingCount || 0;
             data.imdb_rating_average = avg;
             data.imdb_votes = votes;
-            data.imdb_rating = `${avg}/10 from ${votes} users`;
+            data.imdb_rating = `${avg} / 10 from ${votes} users`;
           }
         }
-      } catch (e) { /* ignore */ }
-    }
-
-    // 生成格式化描述（与原结构兼容）
-    let descr = data.poster ? `[img]${data.poster}[/img]\n\n` : '';
-    if (data.foreign_title) {
-      descr += `❁ 片　　名:　${data.foreign_title}\n`;
-    } else if (data.chinese_title) {
-      descr += `❁ 片　　名:　${data.chinese_title}\n`;
-    }
-    if (data.aka && data.aka.length) descr += `❁ 译　　名:　${data.aka.join(" / ")}\n`;
-    if (data.year) descr += `❁ 年　　代:　${data.year}\n`;
-    if (data.region && data.region.length) descr += `❁ 产　　地:　${data.region.join(" / ")}\n`;
-    if (data.genre && data.genre.length) descr += `❁ 类　　别:　${data.genre.join(" / ")}\n`;
-    if (data.language && data.language.length) descr += `❁ 语　　言:　${data.language.join(" / ")}\n`;
-    if (data.playdate && data.playdate.length) descr += `❁ 上映日期:　${data.playdate.join(" / ")}\n`;
-    if (data.imdb_rating) descr += `❁ IMDb评分:　${data.imdb_rating}\n`;
-    if (data.imdb_link) descr += `❁ IMDb链接:　${data.imdb_link}\n`;
-    descr += `❁ 豆瓣评分:　${data.douban_rating}\n`;
-    descr += `❁ 豆瓣链接:　${data.douban_link}\n`;
-    if (data.episodes) descr += `❁ 集　　数:　${data.episodes}\n`;
-    if (data.duration) descr += `❁ 片　　长:　${data.duration}\n`;
-    if (data.director && data.director.length) descr += `❁ 导　　演:　${data.director.map(x => x.name).join(" / ")}\n`;
-    if (data.writer && data.writer.length) descr += `❁ 编　　剧:　${data.writer.map(x => x.name).join(" / ")}\n`;
-
-    if (data.cast && data.cast.length) {
-      const castNames = data.cast.map(x => x.name).filter(Boolean);
-      if (castNames.length) {
-        descr += `❁ 主　　演:　${castNames[0]}\n`;
-        for (let i = 1; i < castNames.length; i++) {
-          descr += `　　　　　　　${castNames[i]}\n`;
-        }
+      } catch (e) {
+        console.error('IMDB API request error:', e);
       }
     }
 
-    if (data.tags && data.tags.length) descr += `\n❁ 标　　签:　${data.tags.join(" | ")}\n`;
-    if (data.introduction) descr += `
-❁ 简　　介
-
-　　${data.introduction.replace(/\n/g, "\n　　")}
-`;
-    if (awards) descr += `
-❁ 获奖情况
-
-　　${awards.replace(/\n/g, "\n　　")}
-`;
-
-    data.format = descr.trim();
+    data.format = generateDoubanFormat(data);
     data.success = true;
     return data;
   } catch (error) {
     return Object.assign(data, { error: error?.message || String(error) });
   }
-}
+};

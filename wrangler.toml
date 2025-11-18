@@ -10,7 +10,7 @@ binding = "ASSETS"
 AUTHOR = "Hares"
 TMDB_API_KEY = ""
 #DOUBAN_COOKIE = ''
-API_KEY = ""
+#API_KEY = ""
 
 [[r2_buckets]]
 binding = "R2_BUCKET"

@@ -1,4 +1,13 @@
-import { makeJsonResponse, AUTHOR, VERSION } from "./lib/common.js";
+import { 
+  makeJsonResponse, 
+  AUTHOR, VERSION, 
+  generateDoubanFormat, 
+  generateImdbFormat, 
+  generateTmdbFormat, 
+  generateMelonFormat, 
+  generateBangumiFormat, 
+  generateSteamFormat 
+} from "./lib/common.js";
 import { gen_douban } from "./lib/douban.js";
 import { gen_imdb } from "./lib/imdb.js";
 import { gen_bangumi } from "./lib/bangumi.js";
@@ -11,38 +20,131 @@ import * as cheerio from 'cheerio';
 const TIME_WINDOW = 60000; // 1分钟
 const MAX_REQUESTS = 30; // 每分钟最多30个请求
 const CLEANUP_INTERVAL = 10000; // 10秒清理一次过期记录
-let lastCleanup = Date.now();
-
-// 简单的请求频率限制存储（在实际生产环境中应使用更可靠的存储）
 const requestCounts = new Map();
 
-/**
- * 验证API密钥
- * @param {string} apiKey - 提供的API密钥
- * @param {object} env - 环境变量
- * @returns {boolean} - 是否验证通过
- */
-function validateApiKey(apiKey, env) {
-  // 如果没有配置API_KEY环境变量，则不需要验证
-  if (!env?.API_KEY || env.API_KEY === "your-secret-api-key-here") {
-    return true;
+const IMDB_CONSTANTS = {
+  SUGGESTION_API_URL: 'https://v2.sg.media-imdb.com/suggestion/h/',
+  FIND_URL: 'https://www.imdb.com/find',
+  BASE_URL: 'https://www.imdb.com',
+  SEARCH_HEADERS: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+  },
+  MAX_RESULTS: 10
+};
+
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Credentials": "false"
+};
+
+const URL_PROVIDERS = [
+  {
+    name: 'douban',
+    domains: ['movie.douban.com'],
+    regex: /\/subject\/(\d+)/,
+    generator: gen_douban,
+    formatter: generateDoubanFormat,
+  },
+  {
+    name: 'imdb',
+    domains: ['www.imdb.com'],
+    regex: /\/title\/(tt\d+)/,
+    generator: gen_imdb,
+    formatter: generateImdbFormat,
+  },
+  {
+    name: 'tmdb',
+    domains: ['api.themoviedb.org', 'www.themoviedb.org'],
+    regex: /\/(movie|tv)\/(\d+)/,
+    // 自定义ID格式化，以匹配旧逻辑
+    idFormatter: (match) => `${match[1]}/${match[2]}`,
+    generator: gen_tmdb,
+    formatter: generateTmdbFormat,
+  },
+  {
+    name: 'melon',
+    domains: ['www.melon.com'],
+    regex: /\/album\/detail\.htm\?albumId=(\d+)/,
+    idFormatter: (match) => `album/${match[1]}`,
+    generator: gen_melon,
+    formatter: generateMelonFormat,
+  },
+  {
+    name: 'bangumi',
+    domains: ['bgm.tv', 'bangumi.tv'],
+    regex: /\/subject\/(\d+)/,
+    generator: gen_bangumi,
+    formatter: generateBangumiFormat,
+  },
+  {
+    name: 'steam',
+    domains: ['store.steampowered.com'],
+    regex: /\/app\/(\d+)/,
+    generator: gen_steam,
+    formatter: generateSteamFormat,
+  },
+];
+
+const ROOT_PAGE_CONFIG = {
+  HTML_TEMPLATE: `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PT-Gen - Generate PT Descriptions</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 40px; line-height: 1.6; }
+        .container { max-width: 800px; margin: 0 auto; }
+        code { background: #f4f4f4; padding: 2px 4px; border-radius: 3px; }
+        pre { background: #f4f4f4; padding: 12px; border-radius: 5px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>PT-Gen API Service</h1>
+        <p>这是一个媒体信息生成服务，支持从豆瓣、IMDb、TMDB、Bangumi等平台获取媒体信息。</p>
+        <h2>更多信息</h2>
+        <p>请访问<a href="https://github.com/rabbitwit/PT-Gen-Refactor" target="_blank" rel="noopener noreferrer">PT-Gen-Refactor</a>项目文档了解详细使用方法。</p>
+        <p>__COPYRIGHT__</p>
+    </div>
+</body>
+</html>`,
+
+  API_DOC: {
+    "API Status": "PT-Gen API Service is running",
+    "Endpoints": {
+      "/": "API documentation (this page)",
+      "/?source=[douban|imdb|tmdb|bgm|melon]&query=[name]": "Search for media by name",
+      "/?url=[media_url]": "Generate media description by URL"
+    },
+    "Notes": "Please use the appropriate source and query parameters for search, or provide a direct URL for generation."
   }
-  
-  // 验证提供的API密钥是否与环境变量中的匹配
-  return apiKey === env.API_KEY;
-}
+};
+
+const PROVIDER_CONFIG = {
+  douban: { generator: gen_douban, formatter: generateDoubanFormat },
+  imdb:   { generator: gen_imdb,   formatter: generateImdbFormat   },
+  tmdb:   { generator: gen_tmdb,   formatter: generateTmdbFormat   },
+  bgm:    { generator: gen_bangumi,formatter: generateBangumiFormat},
+  melon:  { generator: gen_melon,  formatter: generateMelonFormat  },
+  steam:  { generator: gen_steam,  formatter: generateSteamFormat  },
+};
+
+let lastCleanup = Date.now();
 
 /**
  * 检查请求频率是否超过限制 - 使用滑动窗口计数器算法
- * 改进点：
- * 1. 使用更精确的算法计算窗口请求数量
- * 2. 优化性能和内存使用
+ * @param {string} clientIP - 客户端IP地址
+ * @returns {Promise<boolean>} - 是否超过频率限制
  */
-async function isRateLimited(clientIP) {
+const isRateLimited = async (clientIP) => {
   const now = Date.now();
   const windowStart = now - TIME_WINDOW;
-  
-  // 清理过期记录
+
   if (now - lastCleanup > CLEANUP_INTERVAL) {
     for (const [ip, requests] of requestCounts.entries()) {
       const validRequests = requests.filter(timestamp => timestamp > windowStart);
@@ -54,88 +156,109 @@ async function isRateLimited(clientIP) {
     }
     lastCleanup = now;
   }
-  
-  // 获取客户端IP的请求记录
+
+  let validRequests = [];
+
   if (requestCounts.has(clientIP)) {
     const requests = requestCounts.get(clientIP);
-    
-    // 过滤有效请求记录
-    const validRequests = requests.filter(timestamp => timestamp > windowStart);
-    
+
+    validRequests = requests.filter(timestamp => timestamp > windowStart);
+
     if (validRequests.length >= MAX_REQUESTS) {
       return true; // 超过频率限制
     }
-    
-    // 添加当前请求时间戳
+
     validRequests.push(now);
     requestCounts.set(clientIP, validRequests);
   } else {
-    // 新的客户端IP，创建初始记录
     requestCounts.set(clientIP, [now]);
   }
-  
-  return false;
-}
 
-// 检查是否为恶意请求
-function isMaliciousRequest(url) {
+  return false;
+};
+
+/**
+ * 解析HTML文本为对象
+ * @param {string} responseText - HTML文本内容
+ * @returns {Object} 对象
+ */
+const page_parser = (responseText) => {
+  return cheerio.load(responseText, {
+    decodeEntities: false
+  });
+};
+
+/**
+ * 检查请求URL是否包含恶意模式
+ * @param {string} url - 要检查的URL
+ * @returns {boolean} - 如果检测到恶意模式返回true，否则返回false
+ */
+const isMaliciousRequest = (url) => {
+  if (!url || typeof url !== 'string') {
+    return true;
+  }
+
   try {
     const { pathname, search } = new URL(url, 'http://localhost');
+    const DIRECTORY_TRAVERSAL_PATTERN = /(\.{2,}\/)/g;
+    const SCRIPT_PROTOCOL_PATTERN = /(script|javascript|vbscript):/i;
+    const EMBED_TAG_PATTERN = /(<\s*iframe|<\s*object|<\s*embed)/i;
+    
     const patterns = [
-      /(\.{2,}\/)/,                       // 目录遍历
-      /(script|javascript|vbscript):/i,   // 脚本协议
-      /(<\s*iframe|<\s*object|<\s*embed)/i // 嵌入标签
+      DIRECTORY_TRAVERSAL_PATTERN,
+      SCRIPT_PROTOCOL_PATTERN,
+      EMBED_TAG_PATTERN
     ];
+    
+    // 使用some确保短路求值，并分别测试pathname和search
     return patterns.some(p => p.test(pathname) || p.test(search));
-  } catch {
-    return true; // URL解析失败视为恶意
+  } catch (error) {
+    return true;
   }
-}
+};
 
-// 检测文本是否主要为中文
-function isChineseText(text) {
-  // 类型检查和空值处理
+/**
+ * 检测文本是否主要为中文
+ * @param {string} text - 要检测的文本
+ * @returns {boolean} - 如果文本中中文字符数量超过英文字符则返回true，否则返回false
+ */
+const isChineseText = (text) => {
   if (typeof text !== 'string' || !text.trim()) {
     return false;
   }
 
-  // 优化正则表达式以包含更多中文字符范围
   const chineseRegex = /[\u4e00-\u9fff\u3400-\u4dbf\u20000-\u2a6df\u2a700-\u2b73f\u2b740-\u2b81f\u2b820-\u2ceaf\uf900-\ufaff]/g;
   const englishRegex = /[a-zA-Z]/g;
-
-  // 计数
   const chineseCount = (text.match(chineseRegex) || []).length;
   const englishCount = (text.match(englishRegex) || []).length;
 
-  // 如果文本太短，需要更严格的判断
   if ((chineseCount + englishCount) < 2) {
     return chineseCount > 0;
   }
 
-  // 返回中文字符数量是否超过英文字符
   return chineseCount > englishCount;
-}
+};
 
-// 通用搜索函数错误处理
-function handleSearchError(source, query, error) {
-  // 构建基础错误响应
+/**
+ * 通用搜索函数错误处理
+ * @param {string} source - 搜索源名称
+ * @param {string} query - 搜索查询词
+ * @param {Error} error - 捕获的错误对象
+ * @returns {Object} - 格式化的错误响应对象
+ */
+const handleSearchError = (source, query, error) => {
   const errorResponse = {
     success: false,
     data: []
   };
 
-  // 特殊处理 AbortError（超时）
   if (error.name === 'AbortError') {
     errorResponse.error = `${source} API请求超时 | ${source} API request timeout`;
-  } 
-  // 保留原始错误信息
-  else if (error.message) {
+  } else if (error.message) {
     errorResponse.error = error.message;
-  } 
-  else {
+  } else {
     errorResponse.error = `Failed to search ${source} for: ${query}.`;
-    
-    // 根据错误类型添加具体提示
+
     if (error instanceof TypeError) {
       errorResponse.error += ' Network or API error.';
     } else if (error.code === 'ETIMEDOUT') {
@@ -145,7 +268,6 @@ function handleSearchError(source, query, error) {
     }
   }
 
-  // 记录错误日志
   console.error(`Search error (${source}):`, {
     query,
     error: error?.message || error,
@@ -153,45 +275,95 @@ function handleSearchError(source, query, error) {
   });
 
   return errorResponse;
-}
+};
 
-// 统一搜索结果处理函数
-function processSearchResults(results, source) {
+/**
+ * 从对象中选择第一个有效值
+ * @param {any} item - 要从中选择值的对象
+ * @param {...string} keys - 要检查的属性键列表
+ * @returns {any} 返回找到的第一个有效值，如果没有找到则返回空字符串
+ */
+const pick = (item, ...keys) => {
+  if (!item || typeof item !== 'object') return '';
+  for (const k of keys) {
+    const v = item[k];
+    if (v !== undefined && v !== null) {
+      try {
+        const strV = String(v);
+        if (strV.trim() !== '') return v;
+      } catch (e) {
+        continue; // 忽略无法转换为字符串的值
+      }
+    }
+  }
+  return '';
+};
+
+/**
+ * 截断字符串并在末尾添加省略号
+ * @param {string|any} s - 要截断的字符串或可转换为字符串的值
+ * @param {number} [n=100] - 截断长度，默认为100个字符
+ * @returns {string} 截断后的字符串，如果输入无效则返回空字符串
+ */
+const truncate = (s, n = 100) => {
+  if (!s || n <= 0) return '';
+  let str = String(s).trim();
+  return str.length > n ? str.slice(0, n).trim() + '...' : str;
+};
+
+/**
+ * 处理搜索结果，标准化不同来源的数据格式
+ * @param {Array} results - 搜索结果数组
+ * @param {string} source - 数据来源 (douban/imdb/tmdb等)
+ * @returns {Object} 标准化后的数据对象
+ */
+const processSearchResults = (results, source) => {
   if (!Array.isArray(results) || results.length === 0) return { data: [] };
 
-  // 安全取值：按候选键顺序返回第一个有效值
-  const pick = (item, ...keys) => {
-    if (!item) return '';
-    for (const k of keys) {
-      const v = item[k];
-      if (v !== undefined && v !== null && String(v).trim() !== '') return v;
-    }
-    return '';
-  };
-
-  const truncate = (s, n = 100) => {
-    if (!s) return '';
-    s = String(s).trim();
-    return s.length > n ? s.slice(0, n).trim() + '...' : s;
-  };
-
+  /**
+   * 构建详情页链接
+   * @param {Object} item - 单个搜索结果项
+   * @param {string} src - 数据来源
+   * @returns {string} 构建好的链接
+   */
   const buildLink = (item, src) => {
-    if (!item) return '';
+    if (!item || typeof item !== 'object') return '';
     if (item.link) return String(item.link);
     if (item.url) return String(item.url);
+
     const id = pick(item, 'id', 'imdb_id', 'douban_id', 'tt');
     if (!id) return '';
-    if (src === 'douban') return `https://movie.douban.com/subject/${id}/`;
-    if (src === 'imdb') return `https://www.imdb.com/title/${id}/`;
-    if (src === 'tmdb') {
-      const media = item.media_type === 'tv' ? 'tv' : 'movie';
-      return `https://www.themoviedb.org/${media}/${id}`;
+
+    switch (src) {
+      case 'douban':
+        return `https://movie.douban.com/subject/${id}/`;
+      case 'imdb':
+        return `https://www.imdb.com/title/${id}/`;
+      case 'tmdb': {
+        const mediaType = item.media_type === 'tv' ? 'tv' : 'movie';
+        return `https://www.themoviedb.org/${mediaType}/${id}`;
+      }
+      default:
+        return '';
     }
-    return '';
+  };
+
+  /**
+   * 安全地从日期字符串中提取年份
+   * @param {string} dateStr - 日期字符串 (YYYY-MM-DD格式)
+   * @returns {string} 年份
+   */
+  const safeGetYearFromReleaseDate = (dateStr) => {
+    if (!dateStr || typeof dateStr !== 'string') return '';
+    try {
+      return dateStr.split('-')[0] || '';
+    } catch (err) {
+      return '';
+    }
   };
 
   const out = results.slice(0, 10).map(raw => {
-    const item = raw || {};
+    const item = raw && typeof raw === 'object' ? raw : {};
 
     switch (source) {
       case 'douban':
@@ -218,10 +390,14 @@ function processSearchResults(results, source) {
 
       case 'tmdb':
         return {
-          year: item.release_date ? String(item.release_date).split('-')[0] : '',
+          year: safeGetYearFromReleaseDate(item.release_date),
           subtype: item.media_type === 'tv' ? 'tv' : 'movie',
-          title: item.original_name ? pick(item, 'name') + ' / ' + pick(item, 'original_name') : item.original_title ? pick(item, 'original_title') : pick(item, 'name'),
-          subtitle: truncate(pick(item, 'overview') || '', 100),
+          title: item.original_name 
+            ? `${pick(item, 'name')} / ${pick(item, 'original_name')}`
+            : item.original_title 
+              ? pick(item, 'original_title') 
+              : pick(item, 'name'),
+          subtitle: truncate(pick(item, 'overview'), 100),
           link: buildLink(item, 'tmdb'),
           rating: item.vote_average != null ? String(item.vote_average) : '',
           id: pick(item, 'id')
@@ -229,10 +405,19 @@ function processSearchResults(results, source) {
 
       default:
         return {
-          year: pick(item, 'year') || pick(item, 'y') || (item.release_date ? String(item.release_date).split('-')[0] : '') || '',
-          subtype: pick(item, 'subtype') || pick(item, 'type') || pick(item, 'q') || 'movie',
+          year: pick(item, 'year') ||
+                pick(item, 'y') ||
+                safeGetYearFromReleaseDate(item.release_date) ||
+                '',
+          subtype: pick(item, 'subtype') ||
+                   pick(item, 'type') ||
+                   pick(item, 'q') ||
+                   'movie',
           title: pick(item, 'title') || pick(item, 'l'),
-          subtitle: pick(item, 'subtitle') || pick(item, 's') || pick(item, 'sub_title') || '',
+          subtitle: pick(item, 'subtitle') ||
+                    pick(item, 's') ||
+                    pick(item, 'sub_title') ||
+                    '',
           link: buildLink(item, source) || '',
           id: pick(item, 'id')
         };
@@ -240,81 +425,122 @@ function processSearchResults(results, source) {
   });
 
   return { data: out };
-}
+};
 
-async function search_imdb(query) {
+/**
+ * 通过IMDb的API进行搜索 (首选方法)注: 不知哪来的API，稳定性未知.
+ * @param {string} query 搜索关键词
+ * @returns {Promise<Array|null>} 如果成功则返回处理后的数据数组，否则返回 null
+ */
+const _searchViaApi = async (query) => {
+  const searchUrl = `${IMDB_CONSTANTS.SUGGESTION_API_URL}${encodeURIComponent(query)}.json`;
   try {
-    const searchUrl = `https://v2.sg.media-imdb.com/suggestion/h/${encodeURIComponent(query)}.json`;
     const response = await fetch(searchUrl);
+    if (!response.ok) {
+      console.log(`API search failed with status: ${response.status}`);
+      return null;
+    }
+
+    const data = await response.json();
+    console.log("IMDB suggestion API data:", data);
+
+    const results = data?.d ?? [];
+
+    if (results.length > 0) {
+      const processed = processSearchResults(results, 'imdb');
+      return processed.data;
+    }
+
+    return null;
+  } catch (error) {
+    console.error("IMDb API request failed:", error);
+    return null;
+  }
+};
+
+/**
+ * 通过抓取IMDb搜索结果页面进行搜索 (备用方法)
+ * @param {string} query 搜索关键词
+ * @returns {Promise<Array>} 返回处理后的数据数组
+ */
+const _searchViaScraping = async (query) => {
+  const searchUrl = `${IMDB_CONSTANTS.FIND_URL}?q=${encodeURIComponent(query)}&s=tt`;
+  console.log("Trying IMDb fallback scraping URL:", searchUrl);
+
+  const response = await fetch(searchUrl, { headers: IMDB_CONSTANTS.SEARCH_HEADERS });
+  if (!response.ok) {
+    throw new Error(`IMDb scrape failed with status ${response.status}`);
+  }
+
+  const html = await response.text();
+  const $ = page_parser(html);
+  const results = [];
+
+  $('.findResult').each((i, el) => {
+    if (i >= IMDB_CONSTANTS.MAX_RESULTS) return false;
+
+    const $el = $(el);
+    const $resultText = $el.find('.result_text');
+    const $link = $resultText.find('a');
+
+    const linkHref = $link.attr('href');
+    if (!linkHref || !linkHref.includes('/title/tt')) return;
+
+    const idMatch = linkHref.match(/\/title\/(tt\d+)/);
+    if (!idMatch) return;
+
+    const title = $link.text().trim();
+    const fullText = $resultText.text();
+    const yearMatch = fullText.match(/\((\d{4})\)/);
     
-    if (response.ok) {
-      const data = await response.json();
-      console.log("IMDB search data:", data);
-      if (data.d && data.d.length > 0) {
-        const processed = processSearchResults(data.d, 'imdb');
-        return { success: true, data: processed.data };
-      }
+    results.push({
+      year: yearMatch ? yearMatch[1] : '',
+      subtype: 'feature',
+      title: title,
+      subtitle: fullText.replace(title, '').trim(),
+      link: `${IMDB_CONSTANTS.BASE_URL}${linkHref}`
+    });
+  });
+
+  const processed = processSearchResults(results, 'imdb');
+  return processed.data;
+};
+
+/**
+ * IMDB主搜索函数
+ * @param {string} query 搜索关键词
+ * @returns {Promise<{success: boolean, data: Array, error?: string}>}
+ */
+const search_imdb = async (query) => {
+  try {
+    // 1. 尝试使用API搜索
+    let searchData = await _searchViaApi(query);
+
+    // 2. 如果API没有结果，则回退到HTML抓取
+    if (!searchData || searchData.length === 0) {
+      console.log("API search yielded no results, falling back to scraping.");
+      searchData = await _searchViaScraping(query);
     }
     
-    // 如果建议API失败，使用备用搜索方法
-    const searchUrl2 = `https://www.imdb.com/find?q=${encodeURIComponent(query)}&s=tt`;
-    console.log("Trying IMDb search URL:", searchUrl2);
-    
-    const response2 = await fetch(searchUrl2, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-      }
-    });
-    
-    if (!response2.ok) {
-      return { success: false, error: `IMDb search failed with status ${response2.status}`, data: [] };
-    }
-    
-    const html = await response2.text();
-    console.log("IMDb search page response length:", html.length);
-    
-    // 使用cheerio解析HTML
-    const $ = page_parser(html);
-    
-    // 提取搜索结果
-    const results = [];
-    $('.findResult').each((i, el) => {
-      if (i >= 10) return; // 最多返回10个结果
-      
-      const $el = $(el);
-      const link = $el.find('.result_text a').attr('href');
-      const title = $el.find('.result_text a').text().trim();
-      const year = $el.find('.result_text').text().match(/\((\d{4})\)/);
-      const subtitle = $el.find('.result_text').text().replace(title, '').trim();
-      
-      if (link && link.includes('/title/tt')) {
-        const idMatch = link.match(/\/title\/(tt\d+)/);
-        if (idMatch) {
-          results.push({
-            year: year ? year[1] : '',
-            subtype: 'feature',
-            title: title,
-            subtitle: subtitle,
-            link: `https://www.imdb.com${link}`
-          });
-        }
-      }
-    });
-    
-    const processed = processSearchResults(results, 'imdb');
-    
-    if (processed.data.length === 0) {
+    // 3. 检查最终结果
+    if (searchData && searchData.length > 0) {
+      return { success: true, data: searchData };
+    } else {
       return { success: false, error: "未找到查询的结果 | No results found for the given query", data: [] };
     }
-    
-    return { success: true, data: processed.data };
+
   } catch (error) {
     return handleSearchError('IMDb', query, error);
   }
-}
+};
 
-async function search_tmdb(query, env) {
+/**
+ * 搜索TMDB数据库获取电影和电视剧信息
+ * @param {string} query - 搜索关键词
+ * @param {Object} env - 环境变量，包含TMDB_API_KEY
+ * @returns {Promise<Object>} 搜索结果对象
+ */
+const search_tmdb = async (query, env) => {
   try {
     const apiKey = env?.TMDB_API_KEY;
     if (!apiKey) {
@@ -324,10 +550,16 @@ async function search_tmdb(query, env) {
     const q = String(query || '').trim();
     if (!q) return { success: false, error: 'Invalid query', data: [] };
 
-    // 并行请求 movie 和 tv，带超时保护
+    const buildRequestOptions = (signal) => ({
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      },
+      signal
+    });
+
     const movieSearchUrl = `https://api.themoviedb.org/3/search/movie?api_key=${apiKey}&query=${encodeURIComponent(q)}`;
     const tvSearchUrl = `https://api.themoviedb.org/3/search/tv?api_key=${apiKey}&query=${encodeURIComponent(q)}`;
-
     const TIMEOUT = 8000;
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timeoutId = controller ? setTimeout(() => controller.abort(), TIMEOUT) : null;
@@ -335,21 +567,10 @@ async function search_tmdb(query, env) {
     let movieResponse, tvResponse;
     try {
       [movieResponse, tvResponse] = await Promise.all([
-        fetch(movieSearchUrl, { 
-          signal: controller?.signal,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-          }
-        }),
-        fetch(tvSearchUrl, { 
-          signal: controller?.signal,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-          }
-        })
+        fetch(movieSearchUrl, buildRequestOptions(controller?.signal)),
+        fetch(tvSearchUrl, buildRequestOptions(controller?.signal))
       ]);
     } catch (fetchError) {
-      // 处理超时和其他网络错误
       if (fetchError?.name === 'AbortError') {
         return { success: false, error: 'TMDB API请求超时 | TMDB API request timeout', data: [] };
       }
@@ -360,27 +581,26 @@ async function search_tmdb(query, env) {
 
     const results = [];
 
-    if (movieResponse && movieResponse.ok) {
-      try {
-        const movieData = await movieResponse.json();
-        if (Array.isArray(movieData.results)) {
-          results.push(...movieData.results.map(item => ({ ...item, media_type: 'movie' })));
-        }
-      } catch (e) {
-        console.warn('TMDB movie parse failed:', e && e.message ? e.message : e);
+    const parseAndPushResults = async (response, type) => {
+      if (!response || !response.ok) {
+        console.warn(`TMDB ${type} response status:`, response?.status);
+        return;
       }
-    }
 
-    if (tvResponse && tvResponse.ok) {
       try {
-        const tvData = await tvResponse.json();
-        if (Array.isArray(tvData.results)) {
-          results.push(...tvData.results.map(item => ({ ...item, media_type: 'tv' })));
+        const data = await response.json();
+        if (Array.isArray(data.results)) {
+          results.push(...data.results.map(item => ({ ...item, media_type: type })));
         }
       } catch (e) {
-        console.warn('TMDB tv parse failed:', e && e.message ? e.message : e);
+        console.warn(`TMDB ${type} parse failed:`, e && e.message ? e.message : e);
       }
-    }
+    };
+
+    await Promise.all([
+      parseAndPushResults(movieResponse, 'movie'),
+      parseAndPushResults(tvResponse, 'tv')
+    ]);
 
     // 按受欢迎程度排序并限制数量
     results.sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
@@ -394,701 +614,539 @@ async function search_tmdb(query, env) {
     return { success: false, error: "未找到查询的结果 | No results found for the given query", data: [] };
   } catch (error) {
     console.error("TMDB search error:", error);
-    // 如果错误对象包含响应数据，将其包含在返回结果中
+
     const errorResponse = {
       success: false,
       data: []
     };
-    
+
     if (error?.message) {
       errorResponse.error = error.message;
     } else {
       errorResponse.error = "TMDB搜索失败 | TMDB search failed";
     }
-    
+
     if (error?.stack) {
       errorResponse.stack = error.stack;
     }
-    
-    // 使用统一的错误处理函数
+
     return handleSearchError('TMDb', query, errorResponse);
   }
-}
+};
 
-function page_parser(responseText) {
-  return cheerio.load(responseText, {
-    decodeEntities: false
-  });
-}
+/**
+ * 处理IMDb搜索请求的箭头函数
+ * @param {string} query - 搜索关键词
+ * @param {Object} env - 环境变量对象
+ * @returns {Promise<Object>} 格式化的JSON响应对象
+ */
+const handleImdbSearch = async (query, env) => {
+  const result = await search_imdb(query);
 
-// 处理搜索请求
-async function handleSearchRequest(source, query, env) {
+  if (!result.success || !result.data || result.data.length === 0) {
+    return makeJsonResponse({
+      success: false,
+      error: result.error || result.message || "IMDb搜索未找到相关结果",
+      data: []
+    }, env);
+  }
+
+  return makeJsonResponse({
+    success: true,
+    data: result.data,
+    site: "search-imdb"
+  }, env);
+};
+
+/**
+ * 处理TMDB搜索请求的箭头函数
+ * @param {string} query - 搜索关键词
+ * @param {Object} env - 环境变量对象，包含TMDB_API_KEY等配置
+ * @returns {Promise<Object>} 格式化的JSON响应对象
+ */
+const handleTmdbSearch = async (query, env) => {
+  const result = await search_tmdb(query, env);
+
+  if (!result.success) {
+    return makeJsonResponse({
+      success: false,
+      error: result.error || result.message || "TMDB搜索失败",
+      data: []
+    }, env);
+  }
+
+  if (!result.data || result.data.length === 0) {
+    return makeJsonResponse({
+      success: false,
+      error: "TMDB搜索未找到相关结果",
+      data: []
+    }, env);
+  }
+
+  return makeJsonResponse({
+    success: true,
+    data: result.data,
+    site: "search-tmdb"
+  }, env);
+};
+
+/**
+ * 处理搜索请求的箭头函数
+ * 根据指定的数据源执行相应的搜索操作
+ * @param {string} source - 搜索数据源 (imdb/tmdb)
+ * @param {string} query - 搜索关键词
+ * @param {Object} env - 环境变量对象
+ * @returns {Promise<Object>} 格式化的JSON响应对象
+ */
+const handleSearchRequest = async (source, query, env) => {
   console.log(`Processing search request: source=${source}, query=${query}`);
-  
+
+  // 防御性检查 source 是否合法
+  if (typeof source !== 'string') {
+    return makeJsonResponse({
+      success: false,
+      error: "Invalid source type. Expected string."
+    }, env);
+  }
+
   try {
-    switch (source.toLowerCase()) {
+    const normalizedSource = source.toLowerCase();
+
+    switch (normalizedSource) {
       case "imdb":
-        const imdbResult = await search_imdb(query);
-        // 检查搜索结果是否成功
-        if (!imdbResult.success || (imdbResult.data && imdbResult.data.length === 0)) {
-          return makeJsonResponse({
-            success: false,
-            error: imdbResult.error || imdbResult.message || "IMDb搜索未找到相关结果",
-            data: []
-          }, env);
-        }
-        return makeJsonResponse({
-          success: true,
-          data: imdbResult.data,
-          site: "search-imdb"
-        }, env);
-        
+        return await handleImdbSearch(query, env);
+
       case "tmdb":
-        const tmdbResult = await search_tmdb(query, env);
-        // 检查搜索结果是否成功
-        if (!tmdbResult.success) {
-          return makeJsonResponse({
-            success: false,
-            error: tmdbResult.error || tmdbResult.message || "TMDB搜索失败",
-            data: []
-          }, env);
-        }
-        if (!tmdbResult.data || tmdbResult.data.length === 0) {
-          return makeJsonResponse({
-            success: false,
-            error: "TMDB搜索未找到相关结果",
-            data: []
-          }, env);
-        }
-        return makeJsonResponse({
-          success: true,
-          data: tmdbResult.data,
-          site: "search-tmdb"
-        }, env);
-        
+        return await handleTmdbSearch(query, env);
+
       default:
         return makeJsonResponse({
           success: false,
-          error: "Invalid source. Supported sources: douban, imdb, tmdb"
+          error: "Invalid source. Supported sources: imdb, tmdb"
         }, env);
     }
   } catch (search_error) {
     return handleSearchError(source, query, search_error);
   }
-}
+};
 
-// 处理自动搜索（根据文本语言判断来源）
-async function handleAutoSearch(query, env) {
+/**
+ * 处理自动搜索请求的箭头函数
+ * 根据查询文本的语言自动选择搜索源（中文使用TMDB，非中文使用IMDb）
+ * @param {string} query - 搜索关键词
+ * @param {Object} env - 环境变量对象
+ * @returns {Promise<Object>} 格式化的JSON响应对象
+ */
+const handleAutoSearch = async (query, env) => {
   console.log(`Processing auto search request: query=${query}`);
-  
+
+  if (!query || typeof query !== 'string' || query.trim() === '') {
+    return makeJsonResponse({
+      success: false,
+      error: "Query parameter is missing or invalid.",
+      data: []
+    }, env);
+  }
+
   try {
-    if (isChineseText(query)) {
-      // 中文关键词使用豆瓣搜索
-      searchResult = await search_tmdb(query, env);
-      console.log(`TMDB search result: ${JSON.stringify(searchResult)}`);
-      if (!searchResult.success) {
-        return makeJsonResponse({
-          success: false,
-          error: searchResult.error,
-          data: []
-        }, env);
-      }
-      if (searchResult.data.length === 0) {
-        return makeJsonResponse({
-          success: false,
-          error: "TMDB搜索未找到相关结果",
-          data: []
-        }, env);
-      }
-      
-      return makeJsonResponse({
-        success: true,
-        data: searchResult.data,
-        site: "search-tmdb"
-      }, env);
-    } else {
-      // 英文关键词使用IMDb搜索
-      const searchResult = await search_imdb(query);
-      console.log(`IMDb search result: ${JSON.stringify(searchResult)}`);
-      if (!searchResult.success || searchResult.data.length === 0) {
-        return makeJsonResponse({
-          success: false,
-          error: searchResult.message || searchResult.error || "IMDb未找到相关结果",
-          data: []
-        }, env);
-      }
-      return makeJsonResponse({
-        success: true,
-        data: searchResult.data,
-        site: "search-imdb"
+    const isChinese = isChineseText(query);
+    const searchProvider = {
+      searchFunction: isChinese ? () => search_tmdb(query, env) : () => search_imdb(query),
+      site: isChinese ? "search-tmdb" : "search-imdb",
+      name: isChinese ? "TMDB" : "IMDb",
+    };
+
+    console.log(`Using ${searchProvider.name} for query: ${query}`);
+    
+    const searchResult = await searchProvider.searchFunction();
+    console.log(`${searchProvider.name} search completed for query: ${query}`);
+
+    if (!searchResult.success) {
+      const errorMessage = searchResult.error || searchResult.message || 
+                          `${searchProvider.name} search failed due to an unknown reason.`;
+      return makeJsonResponse({ 
+        success: false, 
+        error: errorMessage, 
+        data: [] 
       }, env);
     }
+
+    if (searchResult.data.length === 0) {
+      return makeJsonResponse({
+        success: false,
+        error: `${searchProvider.name} 未找到相关结果 | No results found`,
+        data: []
+      }, env);
+    }
+
+    return makeJsonResponse({
+      success: true,
+      data: searchResult.data,
+      site: searchProvider.site
+    }, env);
+
   } catch (err) {
-    console.error("Error in auto search:", err);
+    console.error("Error in auto search:", err.message || err);
     return makeJsonResponse({
       success: false,
       error: "Search failed. Please try again later.",
       data: []
     }, env);
   }
-}
-
-// 处理URL请求
-async function handleUrlRequest(url_, env) {
-  console.log(`Processing URL request: url=${url_}`);
-  
-  // 提取统一的资源标识符
-  let resourceId = null;
-  
-  // 判断URL类型并提取资源ID
-  if (url_.includes("://movie.douban.com/")) {
-    // 豆瓣电影
-    const sid = url_.match(/\/subject\/(\d+)/)?.[1];
-    if (sid) {
-      resourceId = `douban_${sid}`;
-    }
-  } else if (url_.includes("://www.imdb.com/")) {
-    // IMDb
-    const sid = url_.match(/\/title\/(tt\d+)/)?.[1];
-    if (sid) {
-      resourceId = `imdb_${sid}`;
-    }
-  } else if (url_.includes("://api.themoviedb.org/") || url_.includes("://www.themoviedb.org/")) {
-    // TMDB
-    const sid_match = url_.match(/\/(movie|tv)\/(\d+)/);
-    if (sid_match) {
-      const sid = `${sid_match[1]}/${sid_match[2]}`;
-      resourceId = `tmdb_${sid.replace(/\//g, '__')}`;
-    }
-  } else if (url_.includes("://www.melon.com/")) {
-    // Melon
-    const sid_match = url_.match(/\/album\/detail\.htm\?albumId=(\d+)/);
-    if (sid_match) {
-      const sid = `album/${sid_match[1]}`;
-      resourceId = `melon_${sid.replace(/\//g, '__')}`;
-    }
-  } else if (url_.includes("://bgm.tv/") || url_.includes("://bangumi.tv/")) {
-    // Bangumi
-    const sid = url_.match(/\/subject\/(\d+)/)?.[1];
-    if (sid) {
-      resourceId = `bgm_${sid}`;
-    }
-  } else if (url_.includes("://store.steampowered.com/")) {
-    // Steam
-    const sid = url_.match(/\/app\/(\d+)/)?.[1];
-    if (sid) {
-      resourceId = `steam_${sid}`;
-    }
-  }
-    
-  // 检查R2中是否已有缓存数据
-  if (resourceId && env.R2_BUCKET) {
-    try {
-      const cachedData = await env.R2_BUCKET.get(resourceId);
-      
-      if (cachedData) {
-        // 如果R2中有缓存数据，直接返回
-        const cachedText = await cachedData.text();
-        console.log(`Returning cached data for resource: ${resourceId}`);
-        return JSON.parse(cachedText);
-      }
-    } catch (e) {
-      console.error('Error reading from R2:', e);
-      // 如果R2读取失败，继续执行正常流程
-    }
-  }
-  
-  let result;
-  
-  // 判断URL类型并调用相应函数
-  if (url_.includes("://movie.douban.com/")) {
-    // 豆瓣电影
-    const sid = url_.match(/\/subject\/(\d+)/)?.[1];
-    if (sid) {
-      result = await gen_douban(sid, env);
-    } else {
-      result = {
-        success: false,
-        error: "Invalid Douban movie URL"
-      };
-    }
-  } else if (url_.includes("://www.imdb.com/")) {
-    // IMDb
-    const sid = url_.match(/\/title\/(tt\d+)/)?.[1];
-    if (sid) {
-      result = await gen_imdb(sid, env);
-    } else {
-      result = {
-        success: false,
-        error: "Invalid IMDb title URL"
-      };
-    }
-  } else if (url_.includes("://api.themoviedb.org/") || url_.includes("://www.themoviedb.org/")) {
-    // TMDB
-    const sid_match = url_.match(/\/(movie|tv)\/(\d+)/);
-    if (sid_match) {
-      const sid = `${sid_match[1]}/${sid_match[2]}`;
-      result = await gen_tmdb(sid, env);
-    } else {
-      result = {
-        success: false,
-        error: "Invalid TMDB URL"
-      };
-    }
-  } else if (url_.includes("://www.melon.com/")) {
-    // Melon
-    const sid_match = url_.match(/\/album\/detail\.htm\?albumId=(\d+)/);
-    if (sid_match) {
-      // 根据melon.js的实现，需要将sid格式化为"album/{id}"的形式
-      const sid = `album/${sid_match[1]}`;
-      result = await gen_melon(sid, env);
-    } else {
-      result = {
-        success: false,
-        error: "Invalid Melon album URL"
-      };
-    }
-  } else if (url_.includes("://bgm.tv/") || url_.includes("://bangumi.tv/")) {
-    // Bangumi
-    const sid = url_.match(/\/subject\/(\d+)/)?.[1];
-    if (sid) {
-      result = await gen_bangumi(sid, env);
-    } else {
-      result = {
-        success: false,
-        error: "Invalid Bangumi subject URL"
-      };
-    }
-  } else if (url_.includes("://store.steampowered.com/")) {
-    // Steam
-    const sid = url_.match(/\/app\/(\d+)/)?.[1];
-    if (sid) {
-      result = await gen_steam(sid, env);
-    } else {
-      result = {
-        success: false,
-        error: "Invalid Steam store URL"
-      };
-    }
-  } else {
-    result = {
-      success: false,
-      error: "Unsupported URL"
-    };
-  }
-  
-  // 如果获取到结果且R2可用，将结果存储到R2
-  if (result && resourceId && env.R2_BUCKET) {
-    try {
-      await env.R2_BUCKET.put(resourceId, JSON.stringify(result));
-      console.log(`Cached result for resource: ${resourceId}`);
-    } catch (e) {
-      console.error('Error writing to R2:', e);
-    }
-  }
-  
-  return result;
-}
-
-// 定义CORS常量
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "Access-Control-Allow-Credentials": "false"
 };
 
-// 验证请求
-async function validateRequest(request, corsHeaders, env) {
-  // 获取客户端IP地址
-  const clientIP = request.headers.get('cf-connecting-ip') || 
-                   request.headers.get('x-forwarded-for') || 
-                   request.headers.get('x-real-ip') || 
+/**
+ * 统一处理URL请求的核心函数
+ * @param {string} url_ 输入的URL
+ * @param {object} env 环境变量，包含R2_BUCKET等
+ * @returns {Promise<object>} 返回处理结果
+ */
+const handleUrlRequest = async (url_, env) => {
+  console.log(`Processing URL request: url=${url_}`);
+
+  const provider = URL_PROVIDERS.find(p => p.domains.some(domain => url_.includes(domain)));
+
+  if (!provider) {
+    return { success: false, error: "Unsupported URL" };
+  }
+
+  const match = url_.match(provider.regex);
+  if (!match) {
+    return { success: false, error: `Invalid ${provider.name} URL` };
+  }
+
+  const sid = provider.idFormatter ? provider.idFormatter(match) : match[1];
+  const resourceId = `${provider.name}_${sid.replace(/\//g, '_')}`;
+  console.log(`Resource ID: ${resourceId}`);
+
+  // 使用通用缓存函数处理缓存逻辑
+  const fetchData = () => provider.generator(sid, env);
+  const result = await _withCache(resourceId, fetchData, env);
+
+  // 动态添加 format 字段
+  if (result?.success) {
+    result.format = provider.formatter(result);
+  }
+
+  return result;
+};
+
+/**
+ * 创建一个标准的JSON错误响应 (保持不变的优化点)
+ * @param {string} message 错误信息
+ * @param {number} status HTTP状态码
+ * @param {object} corsHeaders CORS头部
+ * @returns {Response}
+ */
+const createErrorResponse = (message, status, corsHeaders) => {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      ...corsHeaders,
+    },
+  });
+};
+
+/**
+ * 验证请求的有效性，包括API密钥、恶意请求和速率限制
+ * @param {Request} request 传入的请求对象
+ * @param {object} corsHeaders CORS头部
+ * @param {object} env 环境变量
+ * @returns {Promise<{valid: boolean, response?: Response, clientIP?: string}>}
+ */
+const validateRequest = async (request, corsHeaders, env) => { 
+  const clientIP = request.headers.get('cf-connecting-ip') ||
+                   request.headers.get('x-forwarded-for') ||
+                   request.headers.get('x-real-ip') ||
                    'unknown';
   
-  // 检查是否提供了API密钥
-  const apiKey = new URL(request.url).searchParams.get("key");
+  const url = new URL(request.url);
+  const isInternalRequest = request.headers.get('X-Internal-Request') === 'true';
   
-  // 检查是否为内部前端调用（通过特殊请求头标识）
-  const internalHeader = request.headers.get('X-Internal-Request');
-  const isInternalRequest = internalHeader === 'true';
-  
-  // 如果配置了API_KEY且不是默认值，则需要验证
-  if (env?.API_KEY && env.API_KEY !== "your-secret-api-key-here") {
-    // 如果是内部请求，直接通过验证
-    if (isInternalRequest) {
-      // 内部前端调用，通过验证
-    } else {
-      // 外部调用（包括直接浏览器访问），需要API密钥
-      if (!apiKey) {
-        //检查是否浏览器直接访问根路径
-        const uri = new URL(request.url);
-        if (uri.pathname === "/" && request.method === "GET") {
-          // 允许浏览器访问根路径，返回API文档
-          return { valid: false, response: await handleRootRequest(env, true) };
-        } else {
-          return {
-            valid: false,
-            response: new Response(
-              JSON.stringify({ error: "API key required. Access denied." }),
-              {
-                status: 401,
-                headers: {
-                  "Content-Type": "application/json",
-                  ...corsHeaders
-                }
-              }
-            )
-          };
-        }
+  if (env?.API_KEY && !isInternalRequest) {
+    const apiKey = url.searchParams.get("key");
+
+    if (!apiKey) {
+      if (url.pathname === "/" && request.method === "GET") {
+        return { valid: false, response: await handleRootRequest(env, true) };
       }
-      
-      // 验证API密钥是否正确
-      if (apiKey !== env.API_KEY) {
-        return {
-          valid: false,
-          response: new Response(
-            JSON.stringify({ error: "Invalid API key. Access denied." }),
-            {
-              status: 401,
-              headers: {
-                "Content-Type": "application/json",
-                ...corsHeaders
-              }
-            }
-          )
-        }
-      }
+      return {
+        valid: false,
+        response: createErrorResponse("API key required. Access denied.", 401, corsHeaders),
+      };
+    }
+    
+    if (apiKey !== env.API_KEY) {
+      return {
+        valid: false,
+        response: createErrorResponse("Invalid API key. Access denied.", 401, corsHeaders),
+      };
     }
   }
-  
-  // 检查是否为恶意请求
+
   if (isMaliciousRequest(request.url)) {
     return {
       valid: false,
-      response: new Response(
-        JSON.stringify({ error: "Malicious request detected. Access denied." }),
-        {
-          status: 403,
-          headers: {
-            "Content-Type": "application/json",
-            ...corsHeaders
-          }
-        }
-      )
+      response: createErrorResponse("Malicious request detected. Access denied.", 403, corsHeaders),
     };
   }
-  
-  // 检查请求频率限制
+
   if (await isRateLimited(clientIP, env)) {
     return {
       valid: false,
-      response: new Response(
-        JSON.stringify({ error: "Rate limit exceeded. Please try again later." }),
-        {
-          status: 429,
-          headers: {
-            "Content-Type": "application/json",
-            ...corsHeaders
-          }
-        }
-      )
+      response: createErrorResponse("Rate limit exceeded. Please try again later.", 429, corsHeaders),
     };
   }
-  
+
   return { valid: true, clientIP };
 }
 
-// 处理根路径请求
-async function handleRootRequest(env, isBrowser) {
+/**
+ * 创建浏览器访问时的HTML响应
+ * @param {string} copyrightText 版权信息文本
+ * @returns {Response}
+ */
+const _createBrowserResponse = (copyrightText) => { 
+  const html = ROOT_PAGE_CONFIG.HTML_TEMPLATE.replace('__COPYRIGHT__', copyrightText);
+  return new Response(html, {
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      ...CORS_HEADERS
+    }
+  });
+}
+
+/**
+ * 创建API访问时的JSON响应
+ * @param {string} author 作者名
+ * @param {object} env 环境变量
+ * @returns {Response}
+ */
+const _createApiResponse = (author, env) => {
+  const apiDoc = {
+    ...ROOT_PAGE_CONFIG.API_DOC,
+    "Version": VERSION,
+    "Author": author,
+    "Copyright": `Powered by @${author}`,
+    "Security": env?.API_KEY ? "API key required for access" : "Open access",
+  };
+  return makeJsonResponse(apiDoc, env);
+}
+
+/**
+ * 处理根路径请求的主函数
+ * @param {object} env 环境变量
+ * @param {boolean} isBrowser 是否为浏览器请求
+ * @returns {Response}
+ */
+const handleRootRequest = async (env, isBrowser) => { 
   const author = env?.AUTHOR || AUTHOR;
   const copyright = `Powered by @${author}`;
   
+  // 优化点 3: 主函数逻辑变得极为清晰，只负责协调和决策
   if (isBrowser) {
-    // 浏览器访问，返回简单的HTML页面，提示API信息
-    const html = `
-<!DOCTYPE html>
-<html>
-<head>
-    <title>PT-Gen - Generate PT Descriptions</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 40px; line-height: 1.6; }
-        .container { max-width: 800px; margin: 0 auto; }
-        code { background: #f4f4f4; padding: 2px 4px; border-radius: 3px; }
-        pre { background: #f4f4f4; padding: 12px; border-radius: 5px; overflow-x: auto; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>PT-Gen API Service</h1>
-        <p>这是一个媒体信息生成服务，支持从豆瓣、IMDb、TMDB、Bangumi等平台获取媒体信息。</p>
-        <h2>更多信息</h2>
-        <p>请访问<a href="https://github.com/rabbitwit/PT-Gen-Refactor" target="_blank" rel="noopener noreferrer">PT-Gen-Refactor</a>项目文档了解详细使用方法。</p>
-        <p>${copyright}</p>
-    </div>
-</body>
-</html>`;
-    
-    return new Response(html, {
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        ...CORS_HEADERS
-      }
-    });
+    return _createBrowserResponse(copyright);
   } else {
-    // API访问，返回API文档
-    return makeJsonResponse({
-      "API Status": "PT-Gen API Service is running",
-      "Version": VERSION,
-      "Author": author,
-      "Copyright": `Powered by @${author}`,
-      "Security": env?.API_KEY ? "API key required for access" : "Open access",
-      "Endpoints": {
-        "/": "API documentation (this page)",
-        "/?source=[douban|imdb|tmdb|bgm|melon]&query=[name]": "Search for media by name",
-        "/?url=[media_url]": "Generate media description by URL"
-      },
-      "Notes": "Please use the appropriate source and query parameters for search, or provide a direct URL for generation."
-    }, env);
+    return _createApiResponse(author, env);
   }
 }
 
-// 处理查询参数请求
-async function handleQueryRequest(request, env, uri) {
-  let source, query, url_, tmdb_id, sid;
-  
-  // 如果是POST请求，从body中获取参数
+/**
+ * 从请求中提取参数，优先从POST body获取，失败则从URL query获取。
+ * @param {Request} request
+ * @param {URL} uri
+ * @returns {Promise<object>} 包含所有参数的对象
+ */
+const _extractParams = async (request, uri) => {
   if (request.method === 'POST') {
     try {
-      const body = await request.json();
-      source = body.source;
-      query = body.query;
-      url_ = body.url;
-      tmdb_id = body.tmdb_id;
-      sid = body.sid;
+      const contentType = request.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        const bodyText = await request.text();
+        if (bodyText.trim()) {
+          const body = JSON.parse(bodyText);
+          return {
+            source: body.source || uri.searchParams.get("source"),
+            query: body.query || uri.searchParams.get("query"),
+            url: body.url || uri.searchParams.get("url"),
+            tmdb_id: body.tmdb_id || uri.searchParams.get("tmdb_id"),
+            sid: body.sid || uri.searchParams.get("sid"),
+          };
+        }
+      }
     } catch (e) {
-      // 如果无法解析JSON，使用URL参数
-      source = uri.searchParams.get("source");
-      query = uri.searchParams.get("query");
-      url_ = uri.searchParams.get("url");
-      tmdb_id = uri.searchParams.get("tmdb_id");
-      sid = uri.searchParams.get("sid");
+      console.warn("Failed to parse POST body as JSON:", e);
     }
-  } else {
-    // GET请求，从URL参数中获取
-    source = uri.searchParams.get("source");
-    query = uri.searchParams.get("query");
-    url_ = uri.searchParams.get("url");
-    tmdb_id = uri.searchParams.get("tmdb_id");
-    sid = uri.searchParams.get("sid");
   }
   
-  try {
-    let response_data;
-    
-    if (source && query) {
-      // 如果指定了source，则使用指定的搜索源
-      if (source === 'imdb' || source === 'tmdb') {
-        // 处理搜索请求
-        const searchResult = await handleSearchRequest(source, query, env);
-        return searchResult;
-      } else {
-        response_data = {error: "Invalid source. Supported sources: douban, imdb, tmdb"};
+  return {
+    source: uri.searchParams.get("source"),
+    query: uri.searchParams.get("query"),
+    url: uri.searchParams.get("url"),
+    tmdb_id: uri.searchParams.get("tmdb_id"),
+    sid: uri.searchParams.get("sid"),
+  };
+};
+
+/**
+ * 带有缓存功能的执行器。
+ * @param {string} resourceId - R2中的缓存键。
+ * @param {Function} fetchFunction - 当缓存未命中时执行的异步函数，它应返回要缓存的数据。
+ * @param {object} env - 包含 R2_BUCKET 的环境变量。
+ * @returns {Promise<object>} 返回缓存或新抓取的数据。
+ */
+async function _withCache(resourceId, fetchFunction, env) {
+  if (env.R2_BUCKET) {
+    try {
+      const cachedData = await env.R2_BUCKET.get(resourceId);
+      if (cachedData) {
+        console.log(`[Cache Hit] Returning cached data for resource: ${resourceId}`);
+        return await cachedData.json();
       }
-    } else if (query && !source) {
-      // 自动根据关键词语言选择搜索源
-      // handleAutoSearch已经返回makeJsonResponse包装的响应，不需要再次包装
-      return await handleAutoSearch(query, env);
-    } else if (url_) {
-      // 处理直接URL请求
-      response_data = await handleUrlRequest(url_, env);
-    } else if (tmdb_id) {
-      // 处理TMDB ID请求
-      console.log("处理TMDB ID请求:", tmdb_id);
-      
-      // 构建统一的资源标识符
-      const resourceId = `tmdb_${String(tmdb_id).replace(/\//g, '__')}`;
-      
-      // 检查R2中是否已有缓存数据（针对TMDB ID请求）
-      if (env.R2_BUCKET) {
-        try {
-          const cachedData = await env.R2_BUCKET.get(resourceId);
-          
-          if (cachedData) {
-            // 如果R2中有缓存数据，直接返回
-            const cachedText = await cachedData.text();
-            console.log(`Returning cached data for resource: ${resourceId}`);
-            response_data = JSON.parse(cachedText);
-          }
-        } catch (e) {
-          console.error('Error reading from R2:', e);
-          // 如果R2读取失败，继续执行正常流程
-        }
-      }
-      
-      // 如果没有缓存数据，则正常处理
-      if (!response_data) {
-        // 对 TMDB ID 进行解码以处理之前编码过的斜杠
-        const decodedTmdbId = String(tmdb_id).replace(/__/g, '/');
-        response_data = await gen_tmdb(decodedTmdbId, env);
-        
-        // 如果获取到结果且R2可用，将结果存储到R2
-        if (response_data && env.R2_BUCKET) {
-          try {
-            await env.R2_BUCKET.put(resourceId, JSON.stringify(response_data));
-            console.log(`Cached result for resource: ${resourceId}`);
-          } catch (e) {
-            console.error('Error writing to R2:', e);
-          }
-        }
-      }
-    } else if (source && sid) {
-      // 处理直接SID请求（豆瓣、IMDb等）
-      console.log(`处理${source} SID请求:`, sid);
-      
-      // 构建统一的资源标识符
-      let resourceId = null;
-      switch (source.toLowerCase()) {
-        case 'douban':
-          resourceId = `douban_${sid}`;
-          break;
-        case 'imdb':
-          resourceId = `imdb_${sid}`;
-          break;
-        case 'tmdb':
-          // TMDB 的 sid 应该已经是编码格式（如 movie__12345），直接解码使用
-          const decodedSid = String(sid).replace(/__/g, '/');
-          response_data = await gen_tmdb(decodedSid, env);
-          break;
-        case 'bgm':
-          resourceId = `bgm_${sid}`;
-          break;
-        case 'melon':
-          resourceId = `melon_${sid.replace(/\//g, '__')}`;
-          break;
-        case 'steam':
-          resourceId = `steam_${sid}`;
-          break;
-        default:
-          resourceId = null;
-      }
-      
-      // 检查R2中是否已有缓存数据（针对SID请求）
-      if (resourceId && env.R2_BUCKET) {
-        try {
-          const cachedData = await env.R2_BUCKET.get(resourceId);
-          
-          if (cachedData) {
-            // 如果R2中有缓存数据，直接返回
-            const cachedText = await cachedData.text();
-            console.log(`Returning cached data for resource: ${resourceId}`);
-            response_data = JSON.parse(cachedText);
-          }
-        } catch (e) {
-          console.error('Error reading from R2:', e);
-          // 如果R2读取失败，继续执行正常流程
-        }
-      }
-      
-      // 如果没有缓存数据，则正常处理
-      if (!response_data) {
-        switch (source.toLowerCase()) {
-          case 'douban':
-            response_data = await gen_douban(sid, env);
-            break;
-          case 'imdb':
-            response_data = await gen_imdb(sid, env);
-            break;
-          case 'tmdb':
-            // 对 SID 进行解码以处理之前编码过的斜杠
-            const decodedSid = String(sid).replace(/__/g, '/');
-            response_data = await gen_tmdb(decodedSid, env);
-            break;
-          case 'bgm':
-            response_data = await gen_bangumi(sid, env);
-            break;
-          case 'melon':
-            const decodedMelonSid = String(sid).replace(/__/g, '/');
-            response_data = await gen_melon(decodedMelonSid, env);
-            break;
-          case 'steam':
-            response_data = await gen_steam(sid, env);
-            break;
-          default:
-            response_data = {error: `Unsupported source: ${source}`};
-        }
-        
-        // 如果获取到结果且R2可用，将结果存储到R2
-        if (response_data && resourceId && env.R2_BUCKET) {
-          try {
-            // 在存储时使用编码后的sid作为resourceId的一部分
-            await env.R2_BUCKET.put(resourceId, JSON.stringify(response_data));
-            console.log(`Cached result for resource: ${resourceId}`);
-          } catch (e) {
-            console.error('Error writing to R2:', e);
-          }
-        }
-      }
-    } else {
-      // 参数不完整的情况
-      response_data = {error: "Invalid parameters. For search, use both `source` and `query`. For generation, use `url` or `source` and `sid`."};
+    } catch (e) {
+      console.error(`Error reading from R2 for ${resourceId}:`, e);
     }
-    
-    return response_data ? makeJsonResponse(response_data, env) : new Response(null, { status: 404 });
+  }
+
+  // 缓存未命中或R2不可用/读取失败
+  console.log(`[Cache Miss] Fetching data for resource: ${resourceId}`);
+  const freshData = await fetchFunction();
+
+  if (freshData?.success && env.R2_BUCKET) {
+    try {
+      const lightweightResult = { ...freshData };
+      delete lightweightResult.format;
+      await env.R2_BUCKET.put(resourceId, JSON.stringify(lightweightResult));
+      console.log(`[Cache Write] Cached result for resource: ${resourceId}`);
+    } catch (e) {
+      console.error(`Error writing to R2 for ${resourceId}:`, e);
+    }
+  }
+  
+  return freshData;
+}
+
+/**
+ * 处理查询请求的主函数，根据不同的参数执行不同的处理逻辑
+ * @param {Request} request - HTTP请求对象
+ * @param {Object} env - 环境变量对象，包含配置信息
+ * @param {URL} uri - 解析后的URL对象
+ * @returns {Promise<Response>} 返回JSON格式的响应数据
+ */
+async function handleQueryRequest(request, env, uri) {
+  const params = await _extractParams(request, uri);
+
+  try {
+    if (params.url) {
+      const responseData = await handleUrlRequest(params.url, env);
+      return makeJsonResponse(responseData, env);
+    }
+
+    if (params.source && params.query) {
+      return await handleSearchRequest(params.source, params.query, env);
+    }
+
+    if (params.query) {
+      return await handleAutoSearch(params.query, env);
+    }
+
+    const source = params.tmdb_id ? 'tmdb' : params.source;
+    const sid = params.tmdb_id || params.sid;
+
+    if (source && sid) {
+      const provider = PROVIDER_CONFIG[source.toLowerCase()];
+      if (!provider) {
+        return makeJsonResponse({ error: `Unsupported source: ${source}` }, env);
+      }
+
+      const decodedSid = String(sid).replace(/_/g, '/');
+      const resourceId = `${source}_${String(sid).replace(/\//g, '_')}`;
+      const fetchData = () => provider.generator(decodedSid, env);
+      let responseData = await _withCache(resourceId, fetchData, env);
+      
+      if (responseData?.success) {
+        responseData.format = provider.formatter(responseData);
+      }
+
+      return makeJsonResponse(responseData, env);
+    }
+
+    return makeJsonResponse({
+      error: "Invalid parameters. Please provide 'url', 'query', or 'source' and 'sid'."
+    }, env);
+
   } catch (e) {
-    console.error("Global error:", e);
+    console.error("Global error in handleQueryRequest:", e);
     return makeJsonResponse({
       success: false,
-      error: `Internal Error, Please contact @Hares.`
-    }, env);
+      error: `Internal Server Error. Please contact the administrator.`
+    }, env, 500);
   }
 }
 
-// 处理主API响应
-async function handleRequest(request, env) {
+/**
+ * 处理OPTIONS请求的函数
+ * 
+ * 该函数用于处理HTTP OPTIONS请求，通常用于CORS预检请求
+ * 返回一个状态码为204的空响应，并包含CORS相关的响应头
+ * 
+ * @returns {Response} 返回一个HTTP响应对象，状态码为204（No Content）
+ */
+const _handleOptionsRequest = () => {
+  return new Response(null, {
+    status: 204,
+    headers: CORS_HEADERS,
+  });
+};
+
+/**
+ * 创建一个表示API端点未找到的错误响应
+ * @param {Object} env - 环境配置对象，用于响应处理
+ * @returns {Object} 返回一个JSON格式的错误响应对象，状态码为404
+ */
+const _createNotFoundResponse = (env) => {
+  const errorPayload = {
+    success: false,
+    error: "API endpoint not found. Please check the documentation for valid endpoints.",
+  };
+
+  return makeJsonResponse(errorPayload, env, 404);
+};
+
+/**
+ * 处理传入的HTTP请求，根据请求方法和路径进行路由分发
+ * @param {Request} request - HTTP请求对象，包含请求方法、URL、headers等信息
+ * @param {Object} env - 环境变量对象，包含运行时环境配置和绑定资源
+ * @returns {Promise<Response>} 返回处理后的HTTP响应对象
+ */
+const handleRequest = async (request, env) => {
   if (request.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-        "Access-Control-Allow-Credentials": "false"
-      }
-    });
+    return _handleOptionsRequest();
   }
-  
+
+  const validation = await validateRequest(request, CORS_HEADERS, env);
+  if (!validation.valid) {
+    return validation.response;
+  }
+
   const uri = new URL(request.url);
-  
-  // 验证请求
-  const { valid, response } = await validateRequest(request, CORS_HEADERS, env);
-  if (!valid) return response;
-  
-  // 处理不同路径和方法
-  if ((uri.pathname === "/" || uri.pathname === "/api")) {
-    // 如果是POST请求，正常处理API功能
-    if (request.method === "POST") {
-      return await handleQueryRequest(request, env, uri);
-    }
-    
-    // 如果是GET请求，一律返回API文档
-    if (request.method === "GET") {
-      return await handleRootRequest(env, true);
-    }
-  } else {
-    // 对于不匹配任何API端点的请求，返回404和安全提示
-    return makeJsonResponse({
-      success: false,
-      error: "API endpoint not found. Please check the documentation for valid endpoints.",
-      message: "This is a backend API service. For API usage, please refer to the documentation."
-    }, env);
+  const { pathname } = uri;
+  const { method } = request;
+
+  if ((pathname === "/" || pathname === "/api") && method === "POST") {
+    return await handleQueryRequest(request, env, uri);
   }
+
+  if ((pathname === "/" || pathname === "/api") && method === "GET") {
+    return handleRootRequest(env, true); 
+  }
+
+  return _createNotFoundResponse(env);
 }
 
 export default {
-  async fetch(request, env) {
-    return await handleRequest(request, env);
+  fetch(request, env) {
+    return handleRequest(request, env);
   }
 };
