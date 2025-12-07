@@ -948,3 +948,31 @@ export const notCacheBangumiFormat = (data) => {
 
   return lines.join('\n').trim();
 };
+
+export const generateHongguoFormat = (data) => {
+  const lines = [];
+
+  if (data.poster_url) {
+    lines.push(`[img]${data.poster_url}[/img]`, '');
+  }
+
+  lines.push(`片　　名　${data.chinese_title}`);
+
+  if (isValidArray(data.genres)) {
+    lines.push(`类　　别　${data.genres.join(' / ')}`);
+  }
+
+  if (data.episodes) {
+    lines.push(`集　　数　${data.episodes}`);
+  }
+
+  if (isValidArray(data.actors)) {
+    lines.push(`主　　演　${data.actors.join(' / ')}`);
+  }
+
+  if (data.synopsis) {
+    lines.push('简　　介', `    ${data.synopsis.replace(/\n/g, '\n    ')}`);
+  }
+
+  return lines.join('\n');
+};

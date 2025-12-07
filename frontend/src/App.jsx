@@ -437,6 +437,7 @@ function App() {
             <li>支持多种资源站点：
               <ul className="list-disc pl-5 mt-1 space-y-1">
                 <li>豆瓣：电影、电视剧</li>
+                <li>红果短剧：短剧链接</li>
                 <li>IMDb：电影、电视剧</li>
                 <li>TMDb：电影、电视剧</li>
                 <li>Bangumi：动画</li>
