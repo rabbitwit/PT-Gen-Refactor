@@ -79,7 +79,7 @@ const URL_PROVIDERS = [
   {
     name: 'hongguo',
     domains: ['novelquickapp.com'],
-    regex: /(?:s\/([a-zA-Z0-9]+)|series_id=(\d+))/,
+    regex: /(?:s\/([A-Za-z0-9_-]+)|series_id=(\d+))/,
     idFormatter: (match) => match[1] || match[2],
     generator: gen_hongguo,
     formatter: (data) => generateHongguoFormat(data),
