@@ -1,7 +1,6 @@
 import { fetchWithTimeout, page_parser } from "./common.js";
 
 export async function gen_hongguo(sid) {
-  const ua = "Mozilla/5.0 (Linux; Android 6.0.1; OPPO A57 Build/MMB29M; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/63.0.3239.83 Mobile Safari/537.36 T7/10.13 baiduboxapp/10.13.0.10 (Baidu; P1 6.0.1)";
   let url;
 
   // 判断 sid 是短链接还是长链接ID
@@ -15,11 +14,7 @@ export async function gen_hongguo(sid) {
   }
 
   try {
-    const response = await fetchWithTimeout(url, {
-      headers: {
-        "User-Agent": ua
-      }
-    });
+    const response = await fetchWithTimeout(url);
 
     const html = await response.text();
     const $ = page_parser(html);
