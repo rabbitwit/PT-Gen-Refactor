@@ -22,6 +22,7 @@
 | Bangumi | 动画 | 否 | - |
 | Melon | 音乐 | 否 | 韩国音乐平台 |
 | Steam | 游戏 | 否 | - |
+| 红果短剧 (HongGuo) | 短剧 | 否 | 支持WEB端和APP的链接 |
 
 ## DEMO预览
 
