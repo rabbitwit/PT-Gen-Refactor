@@ -1,11 +1,12 @@
 import { makeJsonResponse, AUTHOR, VERSION, ROOT_PAGE_CONFIG, page_parser, fetchWithTimeout } from "./common.js";
-import { generateDoubanFormat, generateImdbFormat, generateTmdbFormat, generateMelonFormat, generateBangumiFormat, generateSteamFormat, notCacheImdbFormat, notCacheBangumiFormat, notCacheSteamFormat } from "./format.js";
+import { generateDoubanFormat, generateImdbFormat, generateTmdbFormat, generateMelonFormat, generateBangumiFormat, generateSteamFormat, generateHongguoFormat, notCacheImdbFormat, notCacheBangumiFormat, notCacheSteamFormat } from "./format.js";
 import { gen_douban } from "./douban.js";
 import { gen_imdb } from "./imdb.js";
 import { gen_bangumi } from "./bangumi.js";
 import { gen_tmdb } from "./tmdb.js";
 import { gen_melon } from "./melon.js";
 import { gen_steam } from "./steam.js";
+import { gen_hongguo } from "./hongguo.js";
 
 const TIME_WINDOW = 60000; // 1分钟
 const MAX_REQUESTS = 30; // 每分钟最多30个请求
@@ -75,6 +76,14 @@ const URL_PROVIDERS = [
     generator: gen_steam,
     formatter: (data,env) => env.ENABLED_CACHE === 'false' ? notCacheSteamFormat(data) : generateSteamFormat(data),
   },
+  {
+    name: 'hongguo',
+    domains: ['novelquickapp.com'],
+    regex: /(?:s\/([A-Za-z0-9_-]+)|series_id=(\d+))/,
+    idFormatter: (match) => match[1] || match[2],
+    generator: gen_hongguo,
+    formatter: (data) => generateHongguoFormat(data),
+  },
 ];
 
 const PROVIDER_CONFIG = {
@@ -84,6 +93,7 @@ const PROVIDER_CONFIG = {
   bangumi:{ generator: gen_bangumi,formatter: (data, env) => env.ENABLED_CACHE === 'false' ? notCacheBangumiFormat(data) : generateBangumiFormat(data) },
   melon:  { generator: gen_melon,  formatter: (data) => generateMelonFormat(data) },
   steam:  { generator: gen_steam,  formatter: (data, env) => env.ENABLED_CACHE === 'false' ? notCacheSteamFormat(data) : generateSteamFormat(data) },
+  hongguo:{ generator: gen_hongguo,formatter: (data) => generateHongguoFormat(data) },
 };
 
 const LINK_TEMPLATES = {
