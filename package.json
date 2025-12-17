@@ -1,7 +1,7 @@
 {
   "name": "pt-gen-refactor",
   "author": "Hares",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Cloudflare Worker for PT-Gen Refactor",
   "main": "worker/index.js",
   "scripts": {

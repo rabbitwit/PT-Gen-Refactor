@@ -1,5 +1,4 @@
 import { NONE_EXIST_ERROR, page_parser, fetchWithTimeout } from "./common.js";
-import { generateMelonFormat } from "./format.js";
 
 const MELOON_ALBUM_INFO_URL = "https://www.melon.com/album/detail.htm";
 const translations = {
@@ -232,7 +231,6 @@ const fetchAlbumInfo = async (albumId) => {
       if (tracks.length) data.tracks = tracks;
     }
 
-    data.format = generateMelonFormat(data);
     data.success = true;
     return data;
   } catch (err) {

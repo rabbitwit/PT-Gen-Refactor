@@ -1,6 +1,5 @@
 import { fetchWithTimeout } from "./common.js";
-import { generateBangumiFormat } from "./format.js";
-import { getStaticMediaDataFromOurBits, formatCharacters, ensureArray, safe } from "./utils.js";
+import { getStaticMediaDataFromOurBits, safe } from "./utils.js";
 
 const BGM_API_BASE = "https://api.bgm.tv/v0";
 const BGM_API_HEADERS = {
@@ -177,7 +176,6 @@ export async function gen_bangumi(sid, env) {
     data.eps = subject.eps ?? subject.total_episodes ?? '';
     data.tags = Array.isArray(subject.meta_tags) ? subject.meta_tags : [];
     data.characters = characters;
-    data.format = generateBangumiFormat(data);
     data.success = true;
 
     return data;

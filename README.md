@@ -16,29 +16,32 @@
 
 | 平台 | 类型 | 需要API密钥 | 备注 |
 |------|------|------------|------|
-| 豆瓣 (Douban) | 电影、电视剧 | 否 | 可选Cookie以获取更多信息 |
+| 豆瓣 (Douban) | 电影、电视剧、读书 | 否 | 可选Cookie以获取更多信息 |
 | IMDb | 电影、电视剧 | 否 | - |
 | TMDB | 电影、电视剧 | 是 | 需要在环境变量中配置API密钥 |
 | Bangumi | 动画 | 否 | - |
 | Melon | 音乐 | 否 | 韩国音乐平台 |
 | Steam | 游戏 | 否 | - |
 | 红果短剧 (HongGuo) | 短剧 | 否 | 支持WEB端和APP的链接 |
+| QQ 音乐 | 音乐 | 是 | 支持QQ音乐WEB的专辑链接 |
 
 ## DEMO预览
 
 <a href="https://pt-gen.hares.dpdns.org" target="_blank">
-  <img src="https://img.shields.io/badge/Demo-Click%20Here-blue?style=for-the-badge" alt="Demo">
+  <img src="https://img1.pixhost.to/images/10944/671640922_logo.png" alt="pt-gen-logo" width="200" height="200">
 </a>
 
 ## 功能特性
 
 - 支持从多个平台获取媒体信息：
-  - 豆瓣 (Douban) - 增强版，支持演员/导演图片信息获取
+  - 豆瓣 (Douban) - 电影、电视剧、读书
   - IMDb (Internet Movie Database)
   - TMDB (The Movie Database)
   - Bangumi (番组计划)
   - Melon (韩国音乐平台)
   - Steam (游戏平台)
+  - 红果短剧 (短剧平台)
+  - QQ 音乐 (中国音乐平台)
 - 自动生成标准 PT 描述格式
 - 响应式 React 前端界面
 - 基于 Cloudflare Worker 的后端服务
@@ -58,7 +61,7 @@
 
 ```bash
 git clone https://github.com/rabbitwit/PT-Gen-Refactor.git
-cd new-pt-gen
+cd PT-Gen-Refactor
 ```
 
 ### 2. 安装依赖
@@ -180,6 +183,7 @@ AUTHOR = "your_author"
 TMDB_API_KEY = "your_tmdb_api_key"
 # 豆瓣Cookie（可选，用于获取更多信息）
 DOUBAN_COOKIE = "your_douban_cookie"
+QQ_COOKIE = "your_qq_music_cookie"
 # 安全API密钥（可选）
 API_KEY = "your_api_key"
 # 静态资源缓存配置,如设置为false则豆瓣、IMDB、Bangumi、Steam 优先从[PtGen Archive](https://github.com/ourbits/PtGen)获取数据，true则会优先从R2或D1获取数据
@@ -204,7 +208,9 @@ database_id = "your_database_id"
 | `AUTHOR` | 否 | - | 作者信息，用于标识资源描述的生成者 |
 | `TMDB_API_KEY` | 否* | - | TMDB API 密钥，如果需要使用 TMDB 功能则必需 |
 | `DOUBAN_COOKIE` | 否 | - | 豆瓣 Cookie，用于获取更多豆瓣信息（可选） |
+| `QQ_COOKIE` | 否* | - | QQ音乐 Cookie，用于使用获取QQ音乐信息如需要使用QQ音乐信息则必需 |
 | `API_KEY` | 否 | - | 安全 API 密钥，用于保护 API 接口（可选） |
+| `ENABLED_CACHE` | 否 | `true` | 是否启用缓存功能 |
 
 > *注意：如果要使用中文搜索功能，必须配置 TMDB_API_KEY，否则只能使用英文进行搜索（调用 IMDb）。
 

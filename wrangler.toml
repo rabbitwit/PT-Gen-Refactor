@@ -11,6 +11,7 @@ binding = "ASSETS"
 AUTHOR = "Hares"
 TMDB_API_KEY = ""
 #DOUBAN_COOKIE = ''
+#QQ_COOKIE = ''
 #API_KEY = ""
 #ENABLED_CACHE = "true"
 

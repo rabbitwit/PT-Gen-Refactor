@@ -14,14 +14,14 @@ function App() {
   function getUrlParameter(url, param) {
     try {
       let urlObj;
-      if (url.startsWith('/')) {
+      if (url.startsWith("/")) {
         urlObj = new URL(url, window.location.origin);
       } else {
         urlObj = new URL(url);
       }
       return urlObj.searchParams.get(param);
     } catch (e) {
-      console.error('Error parsing URL:', e);
+      console.error("Error parsing URL:", e);
       return null;
     }
   }
@@ -74,15 +74,32 @@ function App() {
     if (err.status === 429 || err.status === 400) {
       return true;
     }
-    
+
     // 兼容性检查错误信息
-    return err.message && (
-      err.message.includes("429") || 
-      err.message.includes("400") ||
-      err.message.includes("Too Many Requests") ||
-      err.message.includes("请求过于频繁")
+    return (
+      err.message &&
+      (err.message.includes("429") ||
+        err.message.includes("400") ||
+        err.message.includes("Too Many Requests") ||
+        err.message.includes("请求过于频繁"))
     );
   }
+
+  const getSiteLabel = (site) => {
+    const siteMap = {
+      hongguo: "红果短剧",
+      douban: "豆瓣电影",
+      douban_book: "豆瓣读书",
+      imdb: "IMDb",
+      tmdb: "TMDb",
+      bangumi: "Bangumi",
+      steam: "Steam",
+      melon: "Melon",
+      qq_music: "QQ音乐",
+    };
+
+    return siteMap[site] || site;
+  };
 
   // 检测文本是否主要为中文
   const isChineseText = (text) => {
@@ -96,150 +113,151 @@ function App() {
   };
 
   const fetchApiData = async (apiUrl, timeout = 10000) => {
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
-    const url = new URL(apiUrl, window.location.origin);
-    const params = {};
-    for (const [key, value] of url.searchParams) {
-      params[key] = value;
-    }
-
-    const response = await fetch("/api", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Internal-Request": "true",
-      },
-      body: JSON.stringify(params),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      const error = new Error(`HTTP error! status: ${response.status}`);
-      error.status = response.status;
-      
-      if (response.status === 429) {
-        try {
-          const errorData = await response.json();
-          error.message = errorData.error || "请求过于频繁，请稍后再试";
-        } catch (e) {
-          error.message = "请求过于频繁，请稍后再试";
-        }
-      } else if (response.status === 401) {
-        error.message = "认证失败，请检查您的权限设置";
-      } else {
-        try {
-          const errorData = await response.json();
-          error.message = errorData.error || `HTTP error! status: ${response.status}`;
-        } catch (e) {
-          error.message = `HTTP error! status: ${response.status}`;
-        }
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      const url = new URL(apiUrl, window.location.origin);
+      const params = {};
+      for (const [key, value] of url.searchParams) {
+        params[key] = value;
       }
-      throw error;
-    }
 
-    const contentType = response.headers.get("content-type");
-    if (!contentType || !contentType.includes("application/json")) {
-      throw new Error("响应数据格式错误：服务器返回的不是JSON格式数据");
-    }
+      const response = await fetch("/api", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Internal-Request": "true",
+        },
+        body: JSON.stringify(params),
+        signal: controller.signal,
+      });
 
-    const data = await response.json();
-    return data;
-  } catch (err) {
-    if (err.name === "AbortError") {
-      const timeoutError = new Error("请求超时，请稍后再试");
-      timeoutError.status = 408; // Request Timeout
-      throw timeoutError;
-    }
+      clearTimeout(timeoutId);
 
-    if (err instanceof SyntaxError) {
-      const parseError = new Error("响应数据格式错误：无法解析JSON数据");
-      parseError.status = 400; // Bad Request
-      throw parseError;
-    }
+      if (!response.ok) {
+        const error = new Error(`HTTP error! status: ${response.status}`);
+        error.status = response.status;
 
-    if (!err.status) {
-      err.status = 500;
+        if (response.status === 429) {
+          try {
+            const errorData = await response.json();
+            error.message = errorData.error || "请求过于频繁，请稍后再试";
+          } catch (e) {
+            error.message = "请求过于频繁，请稍后再试";
+          }
+        } else if (response.status === 401) {
+          error.message = "认证失败，请检查您的权限设置";
+        } else {
+          try {
+            const errorData = await response.json();
+            error.message =
+              errorData.error || `HTTP error! status: ${response.status}`;
+          } catch (e) {
+            error.message = `HTTP error! status: ${response.status}`;
+          }
+        }
+        throw error;
+      }
+
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("响应数据格式错误：服务器返回的不是JSON格式数据");
+      }
+
+      const data = await response.json();
+      return data;
+    } catch (err) {
+      if (err.name === "AbortError") {
+        const timeoutError = new Error("请求超时，请稍后再试");
+        timeoutError.status = 408; // Request Timeout
+        throw timeoutError;
+      }
+
+      if (err instanceof SyntaxError) {
+        const parseError = new Error("响应数据格式错误：无法解析JSON数据");
+        parseError.status = 400; // Bad Request
+        throw parseError;
+      }
+
+      if (!err.status) {
+        err.status = 500;
+      }
+
+      throw err;
     }
-    
-    throw err;
-  }
-};
+  };
 
   const handleSubmit = async (e) => {
-  e.preventDefault();
-  if (!url) return;
+    e.preventDefault();
+    if (!url) return;
 
-  resetStates();
-  setLoading(true);
+    resetStates();
+    setLoading(true);
 
-  try {
-    let apiUrl = buildApiUrl(url);
-    if (!apiUrl) {
-      setError("无效的输入");
-      setLoading(false);
-      return;
-    }
-
-    // 检查是否是 douban 源
-    const isDoubanSource = apiUrl.includes("source=douban");
-    let data;
-    
     try {
-      data = await fetchApiData(apiUrl, 20000);
-    } catch (err) {
-      // 如果是 douban 源且出现 429 错误，则尝试使用 tmdb
-      if (isDoubanSource && isRateLimitError(err)) {
-        console.log("豆瓣请求过于频繁，尝试使用 TMDB...");
-        
-        // 构建 TMDB 查询 URL
-        const query = getUrlParameter(apiUrl, "query");
-        if (query) {
-          apiUrl = `/api?source=tmdb&query=${encodeURIComponent(query)}`;
-          try {
-            data = await fetchApiData(apiUrl, 20000);
-          } catch (tmdbErr) {
-            // 如果TMDB也失败，抛出原始错误
-            console.log("TMDB搜索也失败了:", tmdbErr);
-            throw err; // 抛出豆瓣的原始错误
+      let apiUrl = buildApiUrl(url);
+      if (!apiUrl) {
+        setError("无效的输入");
+        setLoading(false);
+        return;
+      }
+
+      // 检查是否是 douban 源
+      const isDoubanSource = apiUrl.includes("source=douban");
+      let data;
+
+      try {
+        data = await fetchApiData(apiUrl, 20000);
+      } catch (err) {
+        // 如果是 douban 源且出现 429 错误，则尝试使用 tmdb
+        if (isDoubanSource && isRateLimitError(err)) {
+          console.log("豆瓣请求过于频繁，尝试使用 TMDB...");
+
+          // 构建 TMDB 查询 URL
+          const query = getUrlParameter(apiUrl, "query");
+          if (query) {
+            apiUrl = `/api?source=tmdb&query=${encodeURIComponent(query)}`;
+            try {
+              data = await fetchApiData(apiUrl, 20000);
+            } catch (tmdbErr) {
+              // 如果TMDB也失败，抛出原始错误
+              console.log("TMDB搜索也失败了:", tmdbErr);
+              throw err; // 抛出豆瓣的原始错误
+            }
+          } else {
+            throw err;
           }
         } else {
           throw err;
         }
-      } else {
-        throw err;
       }
-    }
 
-    if (data.success === false) {
-      setError(data.error || "搜索失败");
+      if (data.success === false) {
+        setError(data.error || "搜索失败");
+        setSearchResults(null);
+        setLastSearchSource(null);
+        setResult("");
+        setFormattedResult(null);
+        setShowCopyNotification(false);
+        return;
+      }
+
+      if (data.site && data.site.startsWith("search-")) {
+        handleSearchResults(data);
+      } else {
+        handleDirectResult(data);
+      }
+    } catch (err) {
+      console.error("提交错误:", err);
+      setError(err.message || "搜索失败");
       setSearchResults(null);
       setLastSearchSource(null);
       setResult("");
       setFormattedResult(null);
-      setShowCopyNotification(false);
-      return;
+    } finally {
+      setLoading(false);
     }
-
-    if (data.site && data.site.startsWith("search-")) {
-      handleSearchResults(data);
-    } else {
-      handleDirectResult(data);
-    }
-  } catch (err) {
-    console.error("提交错误:", err);
-    setError(err.message || "搜索失败");
-    setSearchResults(null);
-    setLastSearchSource(null);
-    setResult("");
-    setFormattedResult(null);
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
   const handleSelectResult = async (link) => {
     setLoading(true);
@@ -390,12 +408,12 @@ function App() {
 
   // 获取媒体类型标签
   const getSubtypeLabel = (subtype) => {
-    if (typeof subtype !== 'string') {
-        if (subtype == null) {
-            subtype = '暂无分类';
-        } else {
-            subtype = String(subtype);
-        }
+    if (typeof subtype !== "string") {
+      if (subtype == null) {
+        subtype = "暂无分类";
+      } else {
+        subtype = String(subtype);
+      }
     }
 
     const subtypeMap = {
@@ -578,7 +596,7 @@ function App() {
                 </h3>
                 {formattedResult && formattedResult.site && (
                   <span className="ml-2 px-2 py-1 text-xs bg-indigo-100 text-indigo-800 rounded-full">
-                    来源: {formattedResult.site}
+                    来源: {getSiteLabel(formattedResult.site)}
                   </span>
                 )}
               </div>
@@ -618,13 +636,14 @@ function App() {
             <li>
               支持多种资源站点：
               <ul className="list-disc pl-5 mt-1 space-y-1">
-                <li>豆瓣：电影、电视剧</li>
+                <li>豆瓣：电影、电视剧、读书</li>
                 <li>红果短剧：短剧链接</li>
                 <li>IMDb：电影、电视剧</li>
                 <li>TMDb：电影、电视剧</li>
                 <li>Bangumi：动画</li>
                 <li>Steam：游戏链接</li>
                 <li>Melon：音乐专辑链接</li>
+                <li>QQ音乐：音乐专辑链接</li>
               </ul>
             </li>
             <li>

@@ -1,9 +1,12 @@
 import * as cheerio from 'cheerio';
 
 export const AUTHOR = "Hares";
-export const VERSION = "1.0.4";
+export const VERSION = "1.0.6";
 export const NONE_EXIST_ERROR = "The corresponding resource does not exist.";
 export const DEFAULT_TIMEOUT = 15000;
+export const ANTI_BOT_PATTERNS = /验证码|检测到有异常请求|机器人程序|访问受限|请先登录/i;
+export const NOT_FOUND_PATTERN = /你想访问的页面不存在/;
+export const ANTI_BOT_ERROR = 'Douban blocked request (captcha/anti-bot). Provide valid cookie or try later.';
 export const ROOT_PAGE_CONFIG = {
   HTML_TEMPLATE: `
 <!DOCTYPE html>
@@ -41,6 +44,26 @@ export const ROOT_PAGE_CONFIG = {
   }
 };
 
+export const DOUBAN_REQUEST_HEADERS_BASE = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+  Accept:
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+  "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8",
+  "Accept-Encoding": "gzip, deflate, br, zstd",
+  "Cache-control": "max-age=0",
+  Connection: "keep-alive",
+  "Upgrade-Insecure-Requests": "1",
+  "Sec-Fetch-Dest": "document",
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": "none",
+  "Sec-Fetch-User": "?1",
+  "sec-ch-ua":
+    '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": '"Windows"',
+};
+
 const JSONP_REGEX = /^[^(]+\(\s*([\s\S]+?)\s*\);?$/i;
 const DEFAULT_BODY_TEMPLATE = Object.freeze({ // 默认响应体模板（不可变）
   success: false,
@@ -48,6 +71,19 @@ const DEFAULT_BODY_TEMPLATE = Object.freeze({ // 默认响应体模板（不可�
   format: '',
   version: VERSION,
   generate_at: 0
+});
+
+export const isAntiBot = (text) => text && ANTI_BOT_PATTERNS.test(text);
+
+/**
+ * 构建请求头对象
+ * @param {Object} env - 环境变量对象
+ * @param {string} env.DOUBAN_COOKIE - 豆瓣Cookie值
+ * @returns {Object} 包含基础请求头和可选Cookie的请求头对象
+ */
+export const buildHeaders = (env = {}) => ({
+  ...DOUBAN_REQUEST_HEADERS_BASE,
+  ...(env?.DOUBAN_COOKIE && { Cookie: env.DOUBAN_COOKIE }),
 });
 
 /**

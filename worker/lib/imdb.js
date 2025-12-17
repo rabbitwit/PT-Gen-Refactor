@@ -1,5 +1,9 @@
-import { NONE_EXIST_ERROR, DEFAULT_TIMEOUT, page_parser, fetchWithTimeout } from "./common.js";
-import { generateImdbFormat } from "./format.js";
+import {
+  NONE_EXIST_ERROR,
+  DEFAULT_TIMEOUT,
+  page_parser,
+  fetchWithTimeout,
+} from "./common.js";
 import { getStaticMediaDataFromOurBits } from "./utils.js";
 
 const DATA_SELECTOR = "script#__NEXT_DATA__";
@@ -341,7 +345,6 @@ export const gen_imdb = async (sid, env) => {
         if (writers.length > 0) data.writers = writers;
       }
 
-      data.format = generateImdbFormat(data);
       data.success = true;
       console.log("IMDb data successfully generated");
       return data;

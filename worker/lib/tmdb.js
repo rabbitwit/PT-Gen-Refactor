@@ -1,6 +1,5 @@
 import { NONE_EXIST_ERROR, DEFAULT_TIMEOUT, fetchWithTimeout } from "./common.js";
 import { safe } from "./utils.js";
-import { generateTmdbFormat } from "./format.js";
 
 const TMDB_API_URL = "https://api.themoviedb.org/3";
 const TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500";
@@ -123,7 +122,6 @@ const buildResult = (tmdb_data, media_type) => {
 
   data.imdb_id = tmdb_data.external_ids?.imdb_id || '';
   data.imdb_link = data.imdb_id ? `https://www.imdb.com/title/${data.imdb_id}/` : '';
-  data.format = generateTmdbFormat(data);
   data.success = true;
 
   return data;

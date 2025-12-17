@@ -1,5 +1,4 @@
 import {  DEFAULT_TIMEOUT, fetchWithTimeout } from "./common.js";
-import { generateSteamFormat } from "./format.js";
 import { getStaticMediaDataFromOurBits, safe } from "./utils.js";
 
 const STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails";
@@ -118,7 +117,6 @@ export const gen_steam = async (sid, env) => {
       data.screenshots = [];
     }
 
-    data.format = generateSteamFormat(data);
     data.success = true;
     return data;
   } catch (error) {
