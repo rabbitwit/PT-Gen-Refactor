@@ -12,6 +12,10 @@
 
 这是一个基于 Cloudflare Worker 和 React 的应用程序，用于生成 PT (Private Tracker) 资源描述。支持从多个平台（如豆瓣、IMDb、TMDB、Bangumi、Melon、Steam等）获取媒体信息，并生成标准的 PT 描述格式。
 
+## 重要提醒
+
+豆瓣近期更新的反爬机制,增加了挑战算法,经测试如不登录使用Cookie是无法获取信息,但是如使用Cookie不知道会不会封禁账号,请各位自行斟酌!
+
 ## 支持的平台
 
 | 平台 | 类型 | 需要API密钥 | 备注 |
