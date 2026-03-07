@@ -9,11 +9,13 @@ binding = "ASSETS"
 # 变量配置 如需使用 vars 配置，请删除 # 符号
 [vars]
 AUTHOR = "Hares"
-TMDB_API_KEY = ""
-#DOUBAN_COOKIE = ''
-#QQ_COOKIE = ''
-#API_KEY = ""
-#ENABLED_CACHE = "true"
+API_KEY = "your_api_key"
+TMDB_API_KEY = "your_tmdb_api_key"
+#DOUBAN_COOKIE = 'your_douban_cookie'
+#QQ_COOKIE = 'your_qq_music_cookie'
+TRAKT_API_CLIENT_ID = "your_trakt_api_client_id"
+TRAKT_APP_NAME = "your_trakt_api_app_name"
+ENABLED_CACHE = "true"
 
 # R2 存储桶配置（可选，选择一种缓存方式即可） 如需使用 R2 存储桶缓存删除参数前的 # 符号
 #[[r2_buckets]]
@@ -25,3 +27,10 @@ TMDB_API_KEY = ""
 #binding = "DB"
 #database_name = "pt-gen-cache"
 #database_id = ""
+
+# 日志配置
+#[observability]
+#[observability.logs]
+#enabled = true
+#head_sampling_rate = 1
+#invocation_logs = true

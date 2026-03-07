@@ -9,14 +9,13 @@ import { getStaticMediaDataFromOurBits } from "./utils.js";
 const DATA_SELECTOR = "script#__NEXT_DATA__";
 const NEWLINE_CLEAN_RE = /[\r\n]/g;
 
-// 更安全地缓存 headers 避免副作用
 const getHeaders = (() => {
   let cachedHeaders = null;
   return () => {
     if (cachedHeaders) return { ...cachedHeaders };
+
     cachedHeaders = {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+      "User-Agent": "Googlebot/2.1 (+http://www.google.com/bot.html)",
       Accept:
         "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
       "Accept-Language": "en-US,en;q=0.9",
@@ -33,23 +32,17 @@ const getHeaders = (() => {
       "sec-ch-ua-platform": '"Windows"',
       "Cache-Control": "max-age=0",
       Priority: "u=0, i",
+      referer: "https://www.google.com/",
     };
+
     return { ...cachedHeaders };
   };
 })();
 
-/**
- * 安全设置 data 字段，仅当值有效时才设置
- */
 const setIfDefined = (obj, key, val) => {
   if (val !== undefined && val !== null) obj[key] = val;
 };
 
-/**
- * 尝试解析JSON字符串
- * @param {string} text - 需要解析的JSON字符串
- * @returns {object|null} 解析成功的JSON对象，如果解析失败或输入为空则返回null
- */
 const tryParseJson = (text) => {
   if (!text) return null;
   const cleaned = text.replace(NEWLINE_CLEAN_RE, "").trim();
@@ -60,12 +53,6 @@ const tryParseJson = (text) => {
   }
 };
 
-/**
- * 解析页面数据函数
- * @param {string} htmlContent - HTML内容字符串
- * @param {string} dataType - 数据类型，默认为'page'
- * @returns {Object} 包含解析信息和数据的对象
- */
 const parsePageData = (htmlContent, dataType = "page") => {
   const $ = page_parser(htmlContent);
   let data = {};
@@ -87,22 +74,11 @@ const parsePageData = (htmlContent, dataType = "page") => {
     console.warn(`Error parsing __NEXT_DATA__ for ${dataType}:`, e);
   }
 
-  return {
-    info: $,
-    data: data,
-  };
+  return { info: $, data };
 };
 
-/**
- * 提取发布信息和别名信息
- * @param {Object} nextData - 从页面中解析出的NEXT_DATA数据
- * @returns {Object} 包含releases和akas两个数组的对象
- */
 const extractReleaseAndAkaInfo = (nextData) => {
-  const result = {
-    releases: [],
-    akas: [],
-  };
+  const result = { releases: [], akas: [] };
 
   try {
     const categories =
@@ -110,6 +86,7 @@ const extractReleaseAndAkaInfo = (nextData) => {
 
     for (const category of categories) {
       const sectionItems = category?.section?.items || [];
+
       switch (category.id) {
         case "releases":
           result.releases = sectionItems.map((item) => ({
@@ -134,229 +111,281 @@ const extractReleaseAndAkaInfo = (nextData) => {
   return result;
 };
 
-/**
- * 异步生成指定 IMDb ID 对应的影视信息数据。
- *
- * @param {string|number} sid - IMDb 的唯一标识符（可带或不带前缀 "tt"）。
- * @returns {Promise<object>} 返回一个包含 IMDb 数据的对象，包括基础信息、演员表、导演编剧、分级证书等，
- *                            若发生错误则返回带有 error 字段的失败信息。
- */
-export const gen_imdb = async (sid, env) => {
-  let raw = String(sid).trim();
+const extractCertificates = (nextData) => {
+  const certificatesData =
+    nextData?.props?.pageProps?.contentData?.certificates || [];
 
-  // 校验输入合法性
-  if (!raw || !/^\d+$/.test(raw.replace(/^tt/, ""))) {
-    return { site: "imdb", sid, error: "Invalid IMDB id" };
+  if (!Array.isArray(certificatesData) || certificatesData.length === 0) {
+    return [];
   }
 
-  if (raw.startsWith("tt")) raw = raw.slice(2);
-  const paddedId = raw.padStart(7, "0");
-  const data = { site: "imdb", sid: paddedId };
+  return certificatesData.map((cert) => ({
+    country: cert.country ?? null,
+    ratings: Array.isArray(cert.ratings)
+      ? cert.ratings.map((rating) => ({
+          rating: rating.rating ?? null,
+          extraInformation: rating.extraInformation ?? null,
+        }))
+      : [],
+  }));
+};
+
+const normalizeImdbId = (sid) => {
+  const raw = String(sid ?? "").trim();
+  const num = raw.replace(/^tt/, "");
+  if (!num || !/^\d+$/.test(num)) return null;
+
+  const padded = num.padStart(7, "0");
+  return {
+    raw,
+    padded,
+    imdbId: `tt${padded}`,
+  };
+};
+
+const fetchAndParseNextData = async (url, headers, dataType) => {
+  try {
+    const resp = await fetchWithTimeout(url, { headers }, DEFAULT_TIMEOUT);
+    if (!resp || !resp.ok) {
+      return {
+        ok: false,
+        status: resp?.status ?? "no response",
+        data: {},
+        response: resp,
+      };
+    }
+
+    const html = await resp.text();
+    const parsed = parsePageData(html, dataType);
+    return {
+      ok: true,
+      status: resp.status,
+      data: parsed.data || {},
+      response: resp,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: "fetch_error",
+      data: {},
+      error,
+    };
+  }
+};
+
+const extractCast = (castV2Data) => {
+  if (!Array.isArray(castV2Data) || castV2Data.length === 0) return [];
+
+  const topCastGroup = castV2Data[0];
+  if (!topCastGroup?.credits) return [];
+
+  return topCastGroup.credits
+    .map((credit) => ({
+      name: credit.name?.nameText?.text || "",
+      image: credit.name?.primaryImage?.url || null,
+      character:
+        credit.creditedRoles?.edges?.[0]?.node?.characters?.edges?.[0]?.node
+          ?.name || null,
+    }))
+    .filter((c) => c.name);
+};
+
+const extractCrew = (crewV2Data) => {
+  const directors = [];
+  const writers = [];
+
+  if (!Array.isArray(crewV2Data)) return { directors, writers };
+
+  for (const group of crewV2Data) {
+    const groupType = group.grouping?.text?.toLowerCase();
+    const credits = group.credits || [];
+    const names = credits
+      .map((credit) => credit.name?.nameText?.text)
+      .filter(Boolean);
+
+    if (groupType === "director" || groupType === "directors") {
+      directors.push(...names);
+    } else if (groupType === "writer" || groupType === "writers") {
+      writers.push(...names);
+    }
+  }
+
+  return { directors, writers };
+};
+
+const buildMainData = (data, props, imdbUrl) => {
+  const aboveTheFoldData = props.aboveTheFoldData || {};
+  const mainColumnData = props.mainColumnData || {};
+
+  const releaseDateData = aboveTheFoldData.releaseDate;
+  const countriesOfOrigin = mainColumnData.countriesDetails?.countries || [];
+
+  setIfDefined(data, "image", aboveTheFoldData.primaryImage?.url);
+  setIfDefined(
+    data,
+    "original_title",
+    aboveTheFoldData.originalTitleText?.text
+  );
+  setIfDefined(data, "year", aboveTheFoldData.releaseYear?.year);
+
+  data.languages =
+    mainColumnData.spokenLanguages?.spokenLanguages?.map((lang) => lang.text) ||
+    [];
+
+  if (releaseDateData) {
+    data.release_date = {
+      year: releaseDateData.year,
+      month: releaseDateData.month,
+      day: releaseDateData.day,
+      country: releaseDateData.country?.text || "",
+    };
+  }
+
+  setIfDefined(
+    data,
+    "runtime",
+    aboveTheFoldData.runtime?.displayableProperty?.value?.plainText
+  );
+  setIfDefined(
+    data,
+    "rating",
+    aboveTheFoldData.ratingsSummary?.aggregateRating || 0
+  );
+  setIfDefined(data, "vote_count", aboveTheFoldData.ratingsSummary?.voteCount || 0);
+
+  data.type =
+    aboveTheFoldData.titleType?.categories?.map((c) => c.value)[0] || "";
+  data.genres = aboveTheFoldData.genres?.genres?.map((g) => g.text) || [];
+
+  setIfDefined(data, "plot", aboveTheFoldData.plot?.plotText?.plainText);
+
+  data.link = imdbUrl;
+  data.origin_country =
+    countriesOfOrigin.length > 0
+      ? countriesOfOrigin.map((country) => country.text)
+      : null;
+
+  if (mainColumnData.episodes) {
+    setIfDefined(data, "episodes", mainColumnData.episodes.episodes?.total);
+    data.seasons =
+      mainColumnData.episodes.seasons?.map((season) => season.number) || [];
+  }
+
+  if (aboveTheFoldData?.keywords?.edges) {
+    data.keywords = aboveTheFoldData.keywords.edges
+      .map((edge) => edge.node?.text)
+      .filter(Boolean);
+  }
+
+  const cast = extractCast(mainColumnData.castV2);
+  if (cast.length > 0) data.cast = cast;
+
+  const { directors, writers } = extractCrew(mainColumnData.crewV2);
+  if (directors.length > 0) data.directors = directors;
+  if (writers.length > 0) data.writers = writers;
+};
+
+export const gen_imdb = async (sid, env = {}) => {
+  const normalized = normalizeImdbId(sid);
+  if (!normalized) return { site: "imdb", sid, error: "Invalid IMDB id" };
+
+  const { padded, imdbId } = normalized;
+  const data = { site: "imdb", sid: padded };
+
+  const readArchiveCache = async () => {
+    try {
+      const cachedData = await getStaticMediaDataFromOurBits("imdb", imdbId);
+      if (cachedData) {
+        console.log(`[Cache Hit] GitHub OurBits DB For IMDB ${imdbId}`);
+        return { ...data, ...cachedData, success: true, _from_ourbits: true };
+      }
+      return null;
+    } catch (e) {
+      console.warn("Archive cache read failed:", e);
+      return null;
+    }
+  };
 
   try {
+    // 规则1：仅当 ENABLED_CACHE === "false" 时先读缓存；不走网络
     if (env.ENABLED_CACHE === "false") {
-      // 尝试从PtGen Archive获取数据
-      const cachedData = await getStaticMediaDataFromOurBits(
-        "imdb",
-        `tt${paddedId}`
-      );
-      if (cachedData) {
-        console.log(`[Cache Hit] GitHub OurBits DB For IMDB tt${paddedId}`);
-        return { ...data, ...cachedData, success: true };
-      }
-    } else {
-      const imdb_id = "tt" + paddedId;
-      const imdb_url = `https://www.imdb.com/title/${imdb_id}/`;
-      const imdb_url_release_info = `https://www.imdb.com/title/${imdb_id}/releaseinfo`;
-      const imdb_url_mpaa = `https://www.imdb.com/title/${imdb_id}/parentalguide`;
-
-      const headers = getHeaders();
-
-      const [pageResult, releaseInfoResult, mpaaResult] =
-        await Promise.allSettled([
-          fetchWithTimeout(imdb_url, { headers }, DEFAULT_TIMEOUT),
-          fetchWithTimeout(imdb_url_release_info, { headers }, DEFAULT_TIMEOUT),
-          fetchWithTimeout(imdb_url_mpaa, { headers }, DEFAULT_TIMEOUT),
-        ]);
-
-      if (pageResult.status === "rejected") {
-        console.error("IMDb fetch error:", pageResult.reason);
-        return Object.assign(data, {
-          error:
-            "Failed to fetch IMDb page. This may be due to network issues or Cloudflare protection.",
-          originalError: pageResult.reason,
-        });
-      }
-
-      const pageResp = pageResult.value;
-      if (!pageResp || !pageResp.ok) {
-        const status = pageResp ? pageResp.status : "no response";
-        if (pageResp && pageResp.status === 404)
-          return Object.assign(data, { error: NONE_EXIST_ERROR });
-        return Object.assign(data, {
-          error: `IMDb page request failed with status ${status}. This may be due to Cloudflare protection.`,
-          originalError: pageResp,
-        });
-      }
-
-      const pageHtml = await pageResp.text();
-      const pageData = parsePageData(pageHtml);
-      const props = pageData.data.props?.pageProps || {};
-      const aboveTheFoldData = props.aboveTheFoldData || {};
-      const mainColumnData = props.mainColumnData || {};
-      const releaseDateData = aboveTheFoldData.releaseDate;
-      const countriesOfOrigin =
-        mainColumnData.countriesDetails?.countries || [];
-      const castV2Data = mainColumnData.castV2;
-      const crewV2Data = mainColumnData.crewV2;
-
-      if (releaseInfoResult.status === "fulfilled") {
-        const releaseInfoResp = releaseInfoResult.value;
-        if (releaseInfoResp && releaseInfoResp.ok) {
-          const releaseInfoHtml = await releaseInfoResp.text();
-          const releaseData = parsePageData(releaseInfoHtml, "release info");
-          const { releases, akas } = extractReleaseAndAkaInfo(releaseData.data);
-          data.aka = akas;
-          data.release = releases;
-        }
-      } else {
-        console.warn("Release info fetch failed:", releaseInfoResult.reason);
-      }
-
-      if (mpaaResult.status === "fulfilled") {
-        const parentalGuideResp = mpaaResult.value;
-        if (parentalGuideResp && parentalGuideResp.ok) {
-          const parentalGuideHtml = await parentalGuideResp.text();
-          const parentalGuideData = parsePageData(
-            parentalGuideHtml,
-            "parental guide"
-          );
-          const certificatesData =
-            parentalGuideData.data.props?.pageProps?.contentData
-              ?.certificates || [];
-          if (Array.isArray(certificatesData) && certificatesData.length > 0) {
-            data.certificates = certificatesData.map((cert) => ({
-              country: cert.country,
-              ratings: cert.ratings.map((rating) => ({
-                rating: rating.rating,
-                extraInformation: rating.extraInformation,
-              })),
-            }));
-          }
-        }
-      } else {
-        console.warn("Parental guide fetch failed:", mpaaResult.reason);
-      }
-
-      setIfDefined(data, "image", aboveTheFoldData.primaryImage?.url);
-      setIfDefined(
-        data,
-        "original_title",
-        aboveTheFoldData.originalTitleText?.text
-      );
-      const releaseYear = aboveTheFoldData.releaseYear?.year;
-      setIfDefined(data, "year", releaseYear);
-
-      data.languages =
-        mainColumnData.spokenLanguages?.spokenLanguages?.map(
-          (lang) => lang.text
-        ) || [];
-
-      if (releaseDateData) {
-        data.release_date = {
-          year: releaseDateData.year,
-          month: releaseDateData.month,
-          day: releaseDateData.day,
-          country: releaseDateData.country?.text || "",
-        };
-      }
-
-      setIfDefined(
-        data,
-        "runtime",
-        aboveTheFoldData.runtime?.displayableProperty?.value?.plainText
-      );
-      setIfDefined(
-        data,
-        "rating",
-        aboveTheFoldData.ratingsSummary?.aggregateRating || 0
-      );
-      setIfDefined(
-        data,
-        "vote_count",
-        aboveTheFoldData.ratingsSummary?.voteCount || 0
-      );
-      data.type =
-        aboveTheFoldData.titleType?.categories?.map((c) => c.value) || [];
-      data.genres = aboveTheFoldData.genres?.genres?.map((g) => g.text) || [];
-      setIfDefined(data, "plot", aboveTheFoldData.plot?.plotText?.plainText);
-      data.link = imdb_url;
-      data.origin_country =
-        countriesOfOrigin.length > 0
-          ? countriesOfOrigin.map((country) => country.text)
-          : null;
-
-      if (mainColumnData.episodes) {
-        setIfDefined(data, "episodes", mainColumnData.episodes.episodes?.total);
-        data.seasons =
-          mainColumnData.episodes.seasons?.map((season) => season.number) || [];
-      }
-
-      if (aboveTheFoldData?.keywords?.edges) {
-        data.keywords = aboveTheFoldData.keywords.edges
-          .map((edge) => edge.node?.text)
-          .filter(Boolean);
-      }
-
-      if (Array.isArray(castV2Data) && castV2Data.length > 0) {
-        const topCastGroup = castV2Data[0];
-        if (topCastGroup?.credits) {
-          data.cast = topCastGroup.credits
-            .map((credit) => ({
-              name: credit.name?.nameText?.text || "",
-              image: credit.name?.primaryImage?.url || null,
-              character:
-                credit.creditedRoles?.edges?.[0]?.node?.characters?.edges?.[0]
-                  ?.node?.name || null,
-            }))
-            .filter((c) => c.name); // 过滤掉无名角色
-        }
-      }
-
-      if (Array.isArray(crewV2Data)) {
-        const directors = [];
-        const writers = [];
-
-        for (const group of crewV2Data) {
-          const groupType = group.grouping?.text?.toLowerCase();
-          const credits = group.credits || [];
-          const names = credits
-            .map((credit) => credit.name?.nameText?.text)
-            .filter(Boolean);
-
-          if (groupType === "director") {
-            directors.push(...names);
-          } else if (groupType === "writers") {
-            writers.push(...names);
-          }
-        }
-
-        if (directors.length > 0) data.directors = directors;
-        if (writers.length > 0) data.writers = writers;
-      }
-
-      data.success = true;
-      console.log("IMDb data successfully generated");
-      return data;
+      const cached = await readArchiveCache();
+      if (cached) return cached;
+      return {
+        ...data,
+        error: "Cache-only mode enabled, but no cache found.",
+      };
     }
+
+    const imdbUrl = `https://www.imdb.com/title/${imdbId}/`;
+    const releaseUrl = `https://www.imdb.com/title/${imdbId}/releaseinfo`;
+    const parentalUrl = `https://www.imdb.com/title/${imdbId}/parentalguide`;
+    const headers = getHeaders();
+
+    const [mainRes, releaseRes, parentalRes] = await Promise.all([
+      fetchAndParseNextData(imdbUrl, headers, "main page"),
+      fetchAndParseNextData(releaseUrl, headers, "release info"),
+      fetchAndParseNextData(parentalUrl, headers, "parental guide"),
+    ]);
+
+    // 规则2：主页面失败时兜底缓存
+    if (!mainRes.ok) {
+      if (mainRes.status === 404) {
+        return { ...data, error: NONE_EXIST_ERROR };
+      }
+
+      const cached = await readArchiveCache();
+      if (cached) return cached;
+
+      return {
+        ...data,
+        error: `Failed to fetch IMDb page (status: ${mainRes.status}).`,
+        originalError: mainRes.error || mainRes.response || null,
+      };
+    }
+
+    // 规则2：主页面解析为空时兜底缓存
+    if (!mainRes.data || Object.keys(mainRes.data).length === 0) {
+      const cached = await readArchiveCache();
+      if (cached) return cached;
+      return { ...data, error: "IMDb page is empty after parsing." };
+    }
+
+    const props = mainRes.data?.props?.pageProps;
+    if (!props) {
+      const cached = await readArchiveCache();
+      if (cached) return cached;
+      return { ...data, error: "IMDb page parsed but pageProps is empty." };
+    }
+
+    buildMainData(data, props, imdbUrl);
+
+    // 可选：release info
+    if (releaseRes.ok) {
+      const { releases, akas } = extractReleaseAndAkaInfo(releaseRes.data);
+      data.aka = akas;
+      data.release = releases;
+    } else if (releaseRes.error) {
+      console.warn("Release info fetch failed:", releaseRes.error);
+    }
+
+    // 可选：parental guide
+    if (parentalRes.ok) {
+      const certs = extractCertificates(parentalRes.data);
+      if (certs.length > 0) data.certificates = certs;
+    } else if (parentalRes.error) {
+      console.warn("Parental guide fetch failed:", parentalRes.error);
+    }
+
+    data.success = true;
+    return data;
   } catch (error) {
     console.error("IMDb processing error:", error);
-    return Object.assign(
-      { site: "imdb", sid },
-      {
-        error: `IMDb processing error: ${error?.message || error}`,
-        originalError: error,
-      }
-    );
+    return {
+      site: "imdb",
+      sid: padded,
+      error: `IMDb processing error: ${error?.message || error}`,
+      originalError: error,
+    };
   }
 };

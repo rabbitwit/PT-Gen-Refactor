@@ -96,6 +96,7 @@ function App() {
       steam: "Steam",
       melon: "Melon",
       qq_music: "QQ音乐",
+      trakt: "Trakt",
     };
 
     return siteMap[site] || site;

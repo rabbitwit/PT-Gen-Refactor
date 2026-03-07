@@ -6,6 +6,7 @@ import {
   page_parser,
   fetchWithTimeout,
 } from "./common.js";
+
 import {
   generateDoubanFormat,
   generateImdbFormat,
@@ -19,6 +20,7 @@ import {
   notCacheSteamFormat,
   generateQQMusicFormat,
   generateDoubanBookFormat,
+  generateTraktFormat,
 } from "./format.js";
 import { gen_douban } from "./douban.js";
 import { gen_imdb } from "./imdb.js";
@@ -29,6 +31,7 @@ import { gen_steam } from "./steam.js";
 import { gen_hongguo } from "./hongguo.js";
 import { gen_qq_music } from "./qq_music.js";
 import { gen_douban_book } from "./douban_book.js";
+import { gen_trakt } from "./trakt.js";
 
 const TIME_WINDOW = 60000; // 1分钟
 const MAX_REQUESTS = 30; // 每分钟最多30个请求
@@ -75,10 +78,16 @@ const URL_PROVIDERS = [
     domains: ["www.imdb.com"],
     regex: /\/title\/(tt\d+)/,
     generator: gen_imdb,
-    formatter: (data, env) =>
-      env.ENABLED_CACHE === "false"
+    formatter: (data, env) => {
+      // 如果是从 OurBits 获取的数据，使用 notCacheImdbFormat
+      if (data._from_ourbits) {
+        return notCacheImdbFormat(data);
+      }
+      // 否则根据 ENABLED_CACHE 选择对应的格式化函数
+      return env.ENABLED_CACHE === "false"
         ? notCacheImdbFormat(data)
-        : generateImdbFormat(data),
+        : generateImdbFormat(data);
+    },
   },
   {
     name: "tmdb",
@@ -131,6 +140,14 @@ const URL_PROVIDERS = [
     generator: gen_qq_music,
     formatter: (data) => generateQQMusicFormat(data),
   },
+  {
+    name: "trakt",
+    domains: ["app.trakt.tv", "trakt.tv"],
+    regex: /\/(movies|shows)\/([a-z0-9-]+)/,
+    idFormatter: (match) => `${match[1]}/${match[2]}`,
+    generator: gen_trakt,
+    formatter: (data) => generateTraktFormat(data),
+  },
 ];
 
 const PROVIDER_CONFIG = {
@@ -140,10 +157,16 @@ const PROVIDER_CONFIG = {
   },
   imdb: {
     generator: gen_imdb,
-    formatter: (data, env) =>
-      env.ENABLED_CACHE === "false"
+    formatter: (data, env) => {
+      // 如果是从 OurBits 获取的数据，使用 notCacheImdbFormat
+      if (data._from_ourbits) {
+        return notCacheImdbFormat(data);
+      }
+      // 否则根据 ENABLED_CACHE 选择对应的格式化函数
+      return env.ENABLED_CACHE === "false"
         ? notCacheImdbFormat(data)
-        : generateImdbFormat(data),
+        : generateImdbFormat(data);
+    },
   },
   tmdb: { generator: gen_tmdb, formatter: (data) => generateTmdbFormat(data) },
   bangumi: {
@@ -175,6 +198,10 @@ const PROVIDER_CONFIG = {
   douban_book: {
     generator: gen_douban_book,
     formatter: (data) => generateDoubanBookFormat(data),
+  },
+  trakt: {
+    generator: gen_trakt,
+    formatter: (data) => generateTraktFormat(data),
   }
 };
 
@@ -184,6 +211,12 @@ const LINK_TEMPLATES = {
   tmdb: (item, id) => {
     const mediaType = item.media_type === "tv" ? "tv" : "movie";
     return `https://www.themoviedb.org/${mediaType}/${id}`;
+  },
+  trakt: (item, id) => {
+    const mediaType = item.type === "shows" || id.startsWith("shows") ? "shows" : "movies";
+    // 从数据中获取 slug，如果没有则使用 ID
+    const slug = item.ids?.slug || id.split('/')[1];
+    return `https://app.trakt.tv/${mediaType}/${slug}`;
   },
 };
 
@@ -1255,14 +1288,14 @@ const _withCache = async (
 
   const getR2Key = () => {
     if (!source) return resourceId;
-    if (source === "tmdb" && subType)
+    if ((source === "tmdb" || source === "trakt") && subType)
       return `${source}/${subType}/${resourceId}`;
     return `${source}/${resourceId}`;
   };
 
   const getD1Key = () => {
     if (!source) return resourceId;
-    if (source === "tmdb" && subType)
+    if ((source === "tmdb" || source === "trakt") && subType)
       return `${source}_${subType}_${resourceId}`;
     return `${source}_${resourceId}`;
   };
@@ -1449,36 +1482,38 @@ const handleQueryRequest = async (request, env, uri) => {
     let sid = params.tmdb_id || params.sid;
 
     if (source && sid) {
-      // TMDB 特殊处理
-      if (source.toLowerCase() === "tmdb") {
-        const isNumericSid = !sid.includes("/");
-
-        if (isNumericSid) {
-          if (!params.type) {
-            return makeJsonResponse(
-              {
-                error:
-                  "For TMDB requests with numeric IDs, the 'type' parameter is required. Please specify type as 'movie' or 'tv'.",
-              },
-              env
-            );
-          }
-
-          if (params.type !== "movie" && params.type !== "tv") {
-            return makeJsonResponse(
-              {
-                error:
-                  "Invalid type parameter for TMDB. Must be 'movie' or 'tv'.",
-              },
-              env
-            );
-          }
-
-          sid = `${params.type}/${sid}`;
+      const sourceConfig = {
+        tmdb: {
+          validTypes: ['movie', 'tv'],
+          errorMsg: "Invalid type parameter for TMDB. Must be 'movie' or 'tv'.",
+          requireMsg: "For TMDB requests with numeric IDs, the 'type' parameter is required. Please specify type as 'movie' or 'tv'."
+        },
+        trakt: {
+          validTypes: ['movies', 'shows'],
+          errorMsg: "Invalid type parameter for Trakt. Must be 'movies' or 'shows'.",
+          requireMsg: "For Trakt requests with numeric IDs, the 'type' parameter is required. Please specify type as 'movies' or 'shows'."
         }
+      };
+
+      const sourceLower = source.toLowerCase();
+      const config = sourceConfig[sourceLower];
+
+      if (config && !sid.includes("/")) {
+        // 检查type参数是否存在
+        if (!params.type) {
+          return makeJsonResponse({ error: config.requireMsg }, env);
+        }
+        
+        // 检查type参数是否有效
+        if (!config.validTypes.includes(params.type)) {
+          return makeJsonResponse({ error: config.errorMsg }, env);
+        }
+        
+        // 组合新的sid
+        sid = `${params.type}/${sid}`;
       }
 
-      const provider = PROVIDER_CONFIG[source.toLowerCase()];
+      const provider = PROVIDER_CONFIG[sourceLower];
       if (!provider) {
         return makeJsonResponse(
           { error: `Unsupported source: ${source}` },
@@ -1489,16 +1524,17 @@ const handleQueryRequest = async (request, env, uri) => {
       const decodedSid = String(sid).replace(/_/g, "/");
       const fetchData = () => provider.generator(decodedSid, env);
       const subType =
-        source.toLowerCase() === "tmdb"
+        sourceLower === "tmdb" || sourceLower === "trakt"
           ? decodedSid.split("/")[0] || null
           : null;
 
       const baseResourceId = sid.split("/").pop();
+
       const responseData = await _withCache(
         baseResourceId,
         fetchData,
         env,
-        source.toLowerCase(),
+        sourceLower,
         subType
       );
 
@@ -1761,27 +1797,79 @@ export const handleRequest = async (request, env) => {
 };
 
 /**
- * 从锚点元素提取文本内容
- * @param {Object} anchor - 锚点对象
- * @returns {string} 提取的文本内容
+ * 清洗豆瓣文本
+ * @param {string} text - 原始文本
+ * @returns {string} 清洗后的文本
  */
-export const fetchAnchorText = (anchor) => {
+const cleanDoubanText = (text) => {
+  if (!text) return '';
+  
+  return text
+    .trim()
+    .replace(/\s+/g, ' ')           // 多个空格合并
+    .replace(/^[:：]\s*/, '')        // 移除开头冒号
+    .replace(/\n+/g, ' ')            // 换行符转空格
+    .trim();
+};
+
+/**
+ * 从锚点元素提取文本内容（豆瓣优化版）
+ * @param {Cheerio} $anchor - Cheerio 锚点元素
+ * @returns {string} 提取的文本内容
+ * 
+ * @example
+ * // 豆瓣典型结构:
+ * // <span class="pl">又名:</span> <a>...</a> 美国队长 / Captain America
+ * const text = fetchAnchorText($('a'));  // 返回: "美国队长 / Captain America"
+ */
+export const fetchAnchorText = ($anchor) => {
   try {
-    if (!anchor?.length) return "";
-
-    const nextSibling = anchor[0].nextSibling;
-    if (nextSibling?.nodeValue) {
-      return nextSibling.nodeValue.trim();
+    // 快速验证
+    if (!$anchor?.length) {
+      return '';
     }
-
-    const parent = anchor.parent();
-    if (parent?.length) {
-      return parent.text().replace(anchor.text(), "").trim();
+    
+    const element = $anchor[0];
+    
+    // 策略1：直接从 nextSibling 获取（最常见）
+    const nextNode = element.nextSibling;
+    if (nextNode?.nodeValue) {
+      const text = cleanDoubanText(nextNode.nodeValue);
+      if (text) {
+        return text;
+      }
     }
+    
+    // 策略2：从父元素获取完整文本，然后移除 label 和 anchor
+    const $parent = $anchor.parent();
+    if ($parent?.length) {
+      // 获取父元素的文本内容
+      let parentText = $parent.text();
+      
+      // 移除 label（如 "又名:"）
+      const $label = $parent.find('span.pl');
+      if ($label.length) {
+        parentText = parentText.replace($label.text(), '');
+      }
+      
+      // 移除锚点文本
+      const anchorText = $anchor.text();
+      if (anchorText) {
+        parentText = parentText.replace(anchorText, '');
+      }
+      
+      const cleaned = cleanDoubanText(parentText);
+      if (cleaned) {
+        return cleaned;
+      }
+    }
+    
+    return '';
+    
   } catch (error) {
-    console.warn("Error in fetchAnchorText:", error);
+    console.warn('fetchAnchorText failed:', error.message);
+    return '';
   }
-  return "";
 };
 
 /**

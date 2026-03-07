@@ -14,16 +14,17 @@
 
 ## 支持的平台
 
-| 平台 | 类型 | 需要API密钥 | 备注 |
+| 平台 | 类型 | 需要 API 密钥 | 备注 |
 |------|------|------------|------|
-| 豆瓣 (Douban) | 电影、电视剧、读书 | 否 | 可选Cookie以获取更多信息 |
+| 豆瓣 (Douban) | 电影、电视剧、读书 | 否 | 可选 Cookie 以获取更多信息 |
 | IMDb | 电影、电视剧 | 否 | - |
-| TMDB | 电影、电视剧 | 是 | 需要在环境变量中配置API密钥 |
+| TMDB | 电影、电视剧 | 是 | 需要在环境变量中配置 API 密钥 |
 | Bangumi | 动画 | 否 | - |
 | Melon | 音乐 | 否 | 韩国音乐平台 |
 | Steam | 游戏 | 否 | - |
-| 红果短剧 (HongGuo) | 短剧 | 否 | 支持WEB端和APP的链接 |
-| QQ 音乐 | 音乐 | 否 | 支持QQ音乐WEB的专辑链接(必须提供Cookie) |
+| 红果短剧 (HongGuo) | 短剧 | 否 | 支持 WEB 端和 APP 的链接 |
+| QQ 音乐 | 音乐 | 否 | 支持 QQ 音乐 WEB 的专辑链接 (必须提供 Cookie) |
+| TraktTV | 电影、电视剧 | 是 | 需要在环境变量中配置 Client ID和APP NAME |
 
 ## DEMO预览
 
@@ -37,6 +38,7 @@
   - 豆瓣 (Douban) - 电影、电视剧、读书
   - IMDb (Internet Movie Database)
   - TMDB (The Movie Database)
+  - Trakt - 电影、电视剧
   - Bangumi (番组计划)
   - Melon (韩国音乐平台)
   - Steam (游戏平台)
@@ -48,7 +50,7 @@
 - 支持多种媒体类型（电影、电视剧、音乐、游戏等）
 - 智能搜索功能（根据关键词语言自动选择搜索平台）
 - 请求频率限制和恶意请求防护
-- 多种缓存存储（R2或D1数据库，避免重复抓取相同资源，提高响应速度）
+- 多种缓存存储（R2 或 D1 数据库，避免重复抓取相同资源，提高响应速度）
 
 ## 环境要求
 
@@ -181,12 +183,16 @@ binding = "ASSETS"
 AUTHOR = "your_author"
 # TMDB API密钥（如果需要使用TMDB功能）
 TMDB_API_KEY = "your_tmdb_api_key"
+# Trakt API Key（如果需要使用 Trakt 功能，请前往 https://trakt.tv/oauth/applications 创建应用获取）
+TRAKT_API_CLIENT_ID = "your_trakt_api_client_id"
+# Trakt APP NAME（如果需要使用 Trakt 功能，请前往 https://trakt.tv/oauth/applications 创建应用获取）
+TRAKT_APP_NAME = "your_trakt_app_name"
 # 豆瓣Cookie（可选，用于获取更多信息）
 DOUBAN_COOKIE = "your_douban_cookie"
 QQ_COOKIE = "your_qq_music_cookie"
 # 安全API密钥（可选）
 API_KEY = "your_api_key"
-# 静态资源缓存配置,如设置为false则豆瓣、IMDB、Bangumi、Steam 优先从[PtGen Archive](https://github.com/ourbits/PtGen)获取数据，true则会优先从R2或D1获取数据
+# 静态资源缓存配置，如设置为 false 则豆瓣、IMDB、Bangumi、Steam 优先从 [PtGen Archive](https://github.com/ourbits/PtGen) 获取数据，true则会优先从R2 或 D1 获取数据
 ENABLED_CACHE = "true"
 
 # R2 存储桶配置（可选，选择一种缓存方式即可）[推荐]
@@ -206,10 +212,12 @@ database_id = "your_database_id"
 | 环境变量 | 是否必需 | 默认值 | 说明 |
 |---------|---------|--------|------|
 | `AUTHOR` | 否 | - | 作者信息，用于标识资源描述的生成者 |
+| `API_KEY` | 否 | - | 安全 API 密钥，用于保护 API 接口（可选） |
 | `TMDB_API_KEY` | 否* | - | TMDB API 密钥，如果需要使用 TMDB 功能则必需 |
 | `DOUBAN_COOKIE` | 否 | - | 豆瓣 Cookie，用于获取更多豆瓣信息（可选） |
 | `QQ_COOKIE` | 否* | - | QQ音乐 Cookie，用于使用获取QQ音乐信息如需要使用QQ音乐信息则必需 |
-| `API_KEY` | 否 | - | 安全 API 密钥，用于保护 API 接口（可选） |
+| `TRAKT_API_CLIENT_ID` | 否*| - | Trakt API Client ID，如果需要使用 Trakt 功能则必需 |
+| `TRAKT_APP_NAME` | 否* | - | Trakt APP NAME，如果需要使用 Trakt 功能则必需 |
 | `ENABLED_CACHE` | 否 | `true` | 是否启用缓存功能 |
 
 > *注意：如果要使用中文搜索功能，必须配置 TMDB_API_KEY，否则只能使用英文进行搜索（调用 IMDb）。
@@ -291,6 +299,8 @@ Published pt-gen-refactor (0.3 seconds)
 - `/api?source=imdb&sid=tt123456` - 解析 IMDb 资源
 - `/api?source=tmdb&sid=123456&type=movie`  - 解析 TMDB 电影资源（使用 type 参数）
 - `/api?source=tmdb&sid=123456&type=tv`  - 解析 TMDB 电视剧资源（使用 type 参数）
+- `/api?source=trakt&sid=bridgerton&type=shows`  - 解析 Trakt 电视剧资源（使用 type 参数）
+- `/api?source=trakt&sid=the-lord-of-the-rings&type=movies`  - 解析 Trakt（使用 type 参数）
 
 ## 新增功能亮点
 
@@ -322,15 +332,17 @@ getStaticMediaDataFromOurBits(source, sid)
 
 1. **豆瓣功能限制**：如果不提供豆瓣 Cookie，将无法获取一些需要登录才能查看的条目信息。
 2. **反爬虫机制**：短时间不要重复请求多次豆瓣，否则会触发豆瓣的反爬虫机制。
-3. **TMDB 功能限制**：需要提供 TMDB API 密钥，否则将无法获取 TMDB 资源信息。
-4. **搜索功能限制**：如要使用中文搜索功能,必须要配置TMDB API KEY,如果没有配置的话,则只能使用英文进行搜索(调用IMDB)。
-5. **安全API 密钥**：如配置了安全API密钥,则调用时必须携带URL参数"key=YOUR_API_KEY",才能获取数据。
-6. **缓存功能**：系统支持 R2 或 D1 作为缓存存储，会自动将抓取的数据存储在配置的存储中，下次请求相同资源时会直接从缓存中读取，提高响应速度并减少源站压力。
-7. **TMDB 参数要求**：当使用参数方式请求 TMDB 资源时，必须提供 type 参数指定媒体类型（movie 或 tv）。
-8. 启动应用后，访问前端地址 (默认 https://pt-gen-refactor.your-subdomain.workers.dev)
-9. 输入媒体资源的链接或 ID
-10. 系统将自动获取并生成标准 PT 描述（豆瓣资源包含演员/导演图片信息）
-11. 复制生成的描述用于 PT 站点发布
+3. **TMDB功能限制**：需要提供 TMDB API密钥，否则将无法获取 TMDB 资源信息。
+4. **Trakt 功能限制**：需要提供 Trakt Client ID密钥，否则将无法获取 Trakt 资源信息。请在 [TraktTV 应用页面](https://trakt.tv/oauth/applications) 创建应用获取 API Key。
+5. **搜索功能限制**：如要使用中文搜索功能，必须要配置 TMDB API KEY，如果没有配置的话，则只能使用英文进行搜索 (调用 IMDB)。
+6. **安全 API密钥**：如配置了安全 API密钥，则调用时必须携带 URL 参数"key=YOUR_API_KEY",才能获取数据。
+7. **缓存功能**：系统支持 R2 或 D1 作为缓存存储，会自动将抓取的数据存储在配置的存储中，下次请求相同资源时会直接从缓存中读取，提高响应速度并减少源站压力。
+8. **TMDB 参数要求**：当使用参数方式请求 TMDB 资源时，必须提供 type 参数指定媒体类型（movie 或 tv）。
+9. **Trakt 参数要求**：当使用参数方式请求 Trakt 资源时，必须提供 type 参数指定媒体类型（shows 或 movies）。推荐使用格式：`?source=trakt&sid=bridgerton&type=shows`（与 TMDB 保持一致）。
+10. 启动应用后，访问前端地址 (默认 https://pt-gen-refactor.your-subdomain.workers.dev)
+11. 输入媒体资源的链接或 ID
+12. 系统将自动获取并生成标准 PT 描述（豆瓣资源包含演员/导演图片信息）
+13. 复制生成的描述用于 PT 站点发布
 
 ## 感谢
 

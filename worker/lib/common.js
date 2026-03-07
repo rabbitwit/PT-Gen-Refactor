@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio';
 
 export const AUTHOR = "Hares";
-export const VERSION = "1.0.6";
+export const VERSION = "1.0.7";
 export const NONE_EXIST_ERROR = "The corresponding resource does not exist.";
 export const DEFAULT_TIMEOUT = 15000;
 export const ANTI_BOT_PATTERNS = /验证码|检测到有异常请求|机器人程序|访问受限|请先登录/i;
@@ -105,6 +105,35 @@ export const fetchWithTimeout = async (url, opts = {}, timeout = DEFAULT_TIMEOUT
 };
 
 /**
+ * 将输入转换为字符串表示，处理多种数据类型
+ * @param {*} input - 需要转换的任意类型数据
+ * @returns {string} 转换后的字符串，null/undefined返回空字符串
+ */
+const toHtmlString = (input) => {
+  if (typeof input === 'string') {
+    return input;
+  }
+
+  if (input == null) {
+    return '';
+  }
+  
+  if (isBuffer(input)) {
+    return input.toString('utf8');
+  }
+  
+  if (isArrayBuffer(input)) {
+    return getTextDecoder().decode(input);
+  }
+  
+  if (isTypedArray(input)) {
+    return getTextDecoder().decode(input);
+  }
+  
+  return String(input);
+};
+
+/**
  * 解析HTML页面为 cheerio 实例
  * 支持 string 或 Buffer 输入
  * @param {string|Buffer} responseText
@@ -112,23 +141,31 @@ export const fetchWithTimeout = async (url, opts = {}, timeout = DEFAULT_TIMEOUT
  */
 export const page_parser = (responseText) => {
   try {
-    if (typeof responseText !== 'string') {
-      if (typeof globalThis !== 'undefined' && globalThis.Buffer && globalThis.Buffer.isBuffer(responseText)) {
-        responseText = responseText.toString('utf8');
-      } else if (responseText instanceof ArrayBuffer) {
-        responseText = new TextDecoder('utf-8').decode(new Uint8Array(responseText));
-      } else if (ArrayBuffer.isView(responseText)) {
-        const view = new Uint8Array(responseText.buffer, responseText.byteOffset, responseText.byteLength);
-        responseText = new TextDecoder('utf-8').decode(view);
-      } else {
-        responseText = String(responseText || '');
-      }
+    const htmlString = toHtmlString(responseText);
+    
+    // 验证 HTML 不为空
+    if (!htmlString || htmlString.trim().length === 0) {
+      console.warn('Empty HTML string provided to parser');
+      return cheerio.load('', { decodeEntities: false });
     }
-  } catch (e) {
-    responseText = String(responseText || '');
+    
+    return cheerio.load(htmlString, { 
+      decodeEntities: false,
+      // 可选：添加更多 cheerio 配置
+      normalizeWhitespace: false,
+      xmlMode: false
+    });
+    
+  } catch (error) {
+    console.error('Failed to parse HTML:', {
+      error: error.message,
+      inputType: typeof responseText,
+      inputLength: responseText?.length || 0
+    });
+    
+    // 返回空的 cheerio 实例而不是抛出错误
+    return cheerio.load('', { decodeEntities: false });
   }
-
-  return cheerio.load(responseText, { decodeEntities: false });
 };
 
 /**

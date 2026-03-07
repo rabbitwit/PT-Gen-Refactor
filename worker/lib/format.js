@@ -303,10 +303,11 @@ const wrapLines = (text, indent = "  ", max = 80) => {
 export const generateDoubanFormat = (data) => {
   const lines = [];
   if (data.poster) lines.push(`[img]${data.poster}[/img]\n`);
-  if (data.foreign_title) {
-    lines.push(`❁ 片　　名:　${data.foreign_title}`);
-  } else if (data.chinese_title) {
+
+  if (data.chinese_title) {
     lines.push(`❁ 片　　名:　${data.chinese_title}`);
+  } else if (data.foreign_title) {
+    lines.push(`❁ 片　　名:　${data.foreign_title}`);
   }
   if (data.aka && data.aka.length)
     lines.push(`❁ 译　　名:　${data.aka.join(" / ").trim()}`);
@@ -396,8 +397,10 @@ export const generateImdbFormat = (data) => {
   } else if (data.name) {
     lines.push(`❁ Original Title:　${data.name}`);
   }
-
-  lines.push(`❁ Type:　${data.type}`);
+if (data.type && typeof data.type === 'string') {
+  lines.push(`❁ Type:　${data.type.charAt(0).toUpperCase() + data.type.slice(1)}`);
+}
+  
   lines.push(`❁ Year:　${data.year}`);
   if (data.origin_country) {
     lines.push(`❁ Origin Country:　${data.origin_country.join(" / ")}`);
@@ -421,13 +424,22 @@ export const generateImdbFormat = (data) => {
   );
 
   if (data.episodes && data.episodes > 0) {
-    lines.push(`❁ Episodes:　${data.episodes}`);
-    if (data.seasons && data.seasons.length > 0) {
-      lines.push(`❁ Seasons:　${data.seasons.join(" | ").trim()}`);
+    lines.push(`❁ Total Episodes:　${data.episodes}`);
+    // 统计总季数
+    if (data.seasons && Array.isArray(data.seasons)) {
+      const totalSeasons = data.seasons.length;
+      if (totalSeasons > 0) {
+        lines.push(`❁ Total Seasons:　${totalSeasons}`);
+      }
     }
   }
 
-  lines.push(`❁ Runtime:　${data.runtime}`);
+  if (data.type === "tv" && data.runtime) {
+    lines.push(`❁ Episode Duration:　${data.runtime}`);
+  } else if (data.runtime) {
+    lines.push(`❁ Runtime:　${data.runtime}`);
+  }
+
   lines.push(
     `❁ IMDb Rating:　${data.rating} / 10 from ${data.vote_count} users`
   );
@@ -550,7 +562,7 @@ export const generateImdbFormat = (data) => {
 
   if (data.plot) {
     lines.push(`
-❁ Plot　
+❁ Description　
 　　${data.plot.replace(/\n/g, "\n　　")}`);
   }
 
@@ -1014,7 +1026,7 @@ export const notCacheImdbFormat = (data) => {
   }
 
   let durationStr = safeGet(data, "duration");
-  if (durationStr !== null && durationStr !== undefined) {
+  if (data.duration !== null && durationStr !== null && durationStr !== undefined) {
     durationStr = durationStr.replace("PT", "").replace("H", "H ");
     lines.push(`❁ Runtime:　${durationStr}`);
   }
@@ -1305,4 +1317,114 @@ export const generateDoubanBookFormat = (data) => {
   }
 
   return lines.join("\n");
+};
+
+/**
+ * 根据提供的 Trakt 数据生成格式化的文本描述。
+ *
+ * @param {Object} data - 包含 Trakt 媒体信息的对象
+ * @returns {string} 格式化后的文本
+ */
+export const generateTraktFormat = (data) => {
+  if (!data || typeof data !== 'object') {
+    return '';
+  }
+
+  const lines = [];
+  const isMovie = data.type === 'movie';
+  const isShow = data.type === 'tv';
+
+  lines.push(`[img]${data.poster}[/img]`, '');
+  lines.push(`❁ Title:　${data.title}`);
+  lines.push(`❁ Type:　${data.type}`);
+
+  if (isMovie && data.year) {
+    lines.push(`❁ Year:　${data.year}`);
+  } else if (isShow && data.year) {
+    lines.push(`❁ First Aired:　${data.year}`);
+  }
+
+  if (data.country) {
+    lines.push(`❁ Country:　${data.country}`);
+  }
+
+  if (data.language) {
+    lines.push(`❁ Languages:　${data.language.join(' / ')}`);
+  }
+
+  if (data.certification) {
+    lines.push(`❁ Certification:　${data.certification}`);
+  }
+
+  if (isMovie && data.runtime) {
+    lines.push(`❁ Runtime:　${data.runtime} minutes`);
+  } else if (isShow && data.runtime) {
+    lines.push(`❁ Episode Duration:　${data.runtime} minutes`);
+  }
+
+  if (isShow) {
+    if (data.seasons && Array.isArray(data.seasons)) {
+      const totalSeasons = data.seasons.length;
+      const totalEpisodes = data.seasons.reduce((sum, season) => sum + (season.episodeCount || 0), 0);
+      lines.push(`❁ Total Seasons:　${totalSeasons}`);
+      lines.push(`❁ Total Episodes:　${totalEpisodes}`);
+    }
+  }
+
+  if (isMovie && data.released) {
+    lines.push(`❁ Released:　${data.released}`);
+  } else if (isShow && data.first_aired) {
+    lines.push(`❁ First Aired:　${data.first_aired}`);
+  }
+
+  if (data.rating) {
+    lines.push(`❁ Rating:　${data.rating_format}`);
+  }
+
+  if (data.genres && Array.isArray(data.genres) && data.genres.length > 0) {
+    lines.push(`❁ Genre:　${data.genres.join(' / ')}`);
+  }
+
+  if (data.imdb_link) {
+    lines.push(`❁ IMDb Link:　${data.imdb_link}`);
+  }
+  if (data.trakt_link) {
+    lines.push(`❁ Trakt Link:　${data.trakt_link}`);
+  }
+
+  if (data.tmdb_link) {
+    lines.push(`❁ TMDB Link:　${data.tmdb_link}`);
+  }
+
+  if (data.tvdb_link) {
+    lines.push(`❁ TVDB Link:　${data.tvdb_link}`);
+  }
+
+  if (data.people && data.people.directors && Array.isArray(data.people.directors) && data.people.directors.length > 0) {
+    const directorLinks = data.people.directors.slice(0, 10).map(d => {
+      return d.name;
+    }).join(' / ');
+    lines.push(`❁ Director:　${directorLinks}`);
+  }
+  
+  if (data.people && data.people.writers && Array.isArray(data.people.writers) && data.people.writers.length > 0) {
+    const writerLinks = data.people.writers.slice(0, 10).map(w => {
+      return w.name;
+    }).join(' / ');
+    lines.push(`❁ Writers:　${writerLinks}`);
+  }
+
+  if (data.people && data.people.cast && Array.isArray(data.people.cast) && data.people.cast.length > 0) {
+    const actors = data.people.cast.slice(0, 10).map(c => {
+      return `${c.character ? `[${c.character}]` : ''} ${c.name}`;
+    });
+    lines.push(`❁ Actors:　${actors.join(' / ')}`);
+  }
+
+  if (data.overview) {
+    const overview = data.overview.replace(/\n/g, '\n\n');
+    lines.push('', '❁ Description', `  ${overview}`, '');
+  }
+
+  return lines.join('\n');
 };
