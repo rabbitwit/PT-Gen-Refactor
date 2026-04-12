@@ -19,10 +19,12 @@ frontend/dist/
 .env.development.local
 .env.test.local
 .env.production.local
+.dev.vars
 
 # Wrangler local state
 .wrangler/
 wrangler-backup.toml
+wrangler.toml
 
 # Logs
 *.log
@@ -39,9 +41,16 @@ Thumbs.db
 # IDEs
 .vscode/
 .idea/
+.lingma/
 
 # Temporary files
 *.tmp
 *.temp
 
-worker/lib/douban_bak.js
+# Test files
+worker/src/test/
+
+# Douban backup
+worker/src/api/providers/douban/movie_bak.js
+qodana.yaml
+frontend/public/.well-known/

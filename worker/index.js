@@ -1,7 +1,9 @@
-import { handleRequest } from "./lib/utils.js";
+import {handleRequest} from "./src/utils/request.js";
+import logger from "./src/logger.js";
 
 export default {
-  fetch(request, env) {
-    return handleRequest(request, env);
-  }
+    fetch(request, env) {
+        logger.init(env);
+        return handleRequest(request, env);
+    }
 };
