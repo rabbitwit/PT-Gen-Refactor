@@ -110,10 +110,14 @@ export const _withCache = async (
 
     if (env.R2_BUCKET) {
         writePromises.push(
-            env.R2_BUCKET.put(r2Key, cacheDataStr).then(() => {
+            env.R2_BUCKET.put(r2Key, cacheDataStr, {
+                httpMetadata: {contentType: 'application/json'}
+            }).then(() => {
                 logger.info(`[Cache Write] R2 for: ${r2Key}`);
             }).catch((e) => logger.error("R2 cache write error:", e))
         );
+    } else {
+        logger.warn("[Cache Warning] R2_BUCKET is not bound in environment");
     }
 
     if (env.DB) {
@@ -131,7 +135,7 @@ export const _withCache = async (
     }
 
     if (writePromises.length > 0) {
-        Promise.all(writePromises).catch((e) =>
+        await Promise.all(writePromises).catch((e) =>
             logger.error("Cache write error:", e),
         );
     }
