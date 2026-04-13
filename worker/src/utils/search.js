@@ -225,15 +225,13 @@ const search_douban = async (query) => {
 
     const data = [];
 
-    // 豆瓣搜索数据结构：data.items 是数组
     if (parsed.items && Array.isArray(parsed.items)) {
         parsed.items.forEach(item => {
-            // item 直接包含搜索结果的字段
             const result = {
                 title: item.title || '',
                 abstract: item.abstract || '',
                 actors: item.abstract_2 || '',
-                type: item.labels.map(label => label.text).join('/'),
+                type: item.labels ? item.labels.map(label => label.text).join('/') : '',
                 rating: item.rating?.value ? parseFloat(item.rating.value) : 0,
                 link: item.url || '',
                 image: item.cover_url || '',
