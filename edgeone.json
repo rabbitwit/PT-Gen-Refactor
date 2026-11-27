@@ -1,0 +1,41 @@
+{
+  "$schema": "https://cdnstatic.tencentcs.com/edgeone/pages/docs/edgeone.schema.json",
+  "nodeVersion": "24",
+  "installCommand": "npm install && npm --prefix frontend install --include=dev",
+  "buildCommand": "npm run build:all",
+  "outputDirectory": "public",
+  "cloudFunctions": {
+    "maxDuration": 60,
+    "includeFiles": [
+      "src/**"
+    ]
+  },
+  "rewrites": [
+    {
+      "source": "/health",
+      "destination": "/api/health"
+    },
+    {
+      "source": "/health/",
+      "destination": "/api/health"
+    },
+    {
+      "source": "/openapi.json",
+      "destination": "/api/openapi.json"
+    }
+  ],
+  "caches": [
+    {
+      "source": "/api/:path*",
+      "cacheTtl": 0
+    },
+    {
+      "source": "/health",
+      "cacheTtl": 0
+    },
+    {
+      "source": "/health/",
+      "cacheTtl": 0
+    }
+  ]
+}

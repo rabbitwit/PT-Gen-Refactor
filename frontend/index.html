@@ -1,13 +1,31 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8"/>
     <link rel="icon" type="image/x-icon" href="/favicon.ico"/>
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <meta name="description"
+          content="PT-Gen — 把豆瓣、IMDb、TMDb、Bangumi、Steam 等站点的资源链接整理成可直接发布的 PT 简介。"/>
+    <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)"/>
+    <meta name="theme-color" content="#08080a" media="(prefers-color-scheme: dark)"/>
     <title>PT-Gen - Generate PT Descriptions</title>
+    <script>
+        // 在首帧前同步主题，避免暗色模式刷新时白屏闪烁
+        (function () {
+            try {
+                var stored = localStorage.getItem('ptgen.theme');
+                var dark = stored === 'dark' || ((!stored || stored === 'system') &&
+                    window.matchMedia('(prefers-color-scheme: dark)').matches);
+                document.documentElement.classList.toggle('dark', dark);
+                document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+            } catch (error) {
+                /* 隐私模式下 localStorage 不可用，忽略 */
+            }
+        })();
+    </script>
 </head>
 <body>
 <div id="root"></div>
-<script type="module" src="/src/main.jsx"></script>
+<script type="module" src="./src/main.jsx"></script>
 </body>
 </html>

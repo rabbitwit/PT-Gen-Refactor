@@ -1,946 +1,1337 @@
-import {useEffect, useState} from "react";
-import "./App.css";
-import logger from "./utils/logger";
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
+import './App.css'
+import {ApiClientError, getConfig, getDetail, request, search} from './api'
+import {createTranslator, detectLanguage, LANGUAGES} from './i18n'
 
-function App() {
-    const [url, setUrl] = useState("");
-    const [result, setResult] = useState("");
-    const [formattedResult, setFormattedResult] = useState(null);
-    const [searchResults, setSearchResults] = useState(null);
-    const [lastSearchSource, setLastSearchSource] = useState(null);
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState(null);
-    const [showCopyNotification, setShowCopyNotification] = useState(false);
-    const SITE_STRATEGIES = [
-        {
-            name: "imdb",
-            regex: /imdb\.com\/title\/(tt\d{7,})/,
-            transform: (m) => ({source: "imdb", sid: m[1]}),
-        },
-        {
-            name: "tmdb",
-            regex: /themoviedb\.org\/(movie|tv)\/(\d+)/,
-            transform: (m) => ({source: "tmdb", sid: `${m[1]}/${m[2]}`}),
-        },
-        {
-            name: "douban",
-            regex: /douban\.com\/subject\/(\d+)/,
-            transform: (m) => ({source: "douban", sid: m[1]}),
-        },
-    ];
-    const SUBTYPE_MAP = Object.freeze({
-        movie: "电影",
-        tv: "电视剧",
-        tvseries: "电视剧",
-        tvepisode: "电视剧",
-        tvmovie: "电视电影",
-        video: "视频",
-        tvspecial: "特别篇",
-        short: "短片",
-        podcastepisode: "播客节目",
-        tvminiseries: "电视迷你剧"
-    });
-    const SEARCH_SOURCE_MAP = {
-        "search-douban": "豆瓣",
-        "search-tmdb": "TMDB",
-        "search-imdb": "IMDb",
-    };
+const VERSION = __APP_VERSION__
 
-    const DEFAULT_SOURCE_LABEL = "未知来源";
-    const DEFAULT_LABEL = "暂无分类";
+const THEME_KEY = 'ptgen.theme'
+const LANGUAGE_KEY = 'ptgen.language'
 
-    // Auto-hide copy notification after 3 seconds
-    // 3秒后自动隐藏复制通知
-    useEffect(() => {
-        if (showCopyNotification) {
-            const timer = setTimeout(() => setShowCopyNotification(false), 3000);
-            return () => clearTimeout(timer);
+const SOURCE_OPTIONS = [
+    'auto',
+    'douban',
+    'douban_book',
+    'imdb',
+    'tmdb',
+    'bangumi',
+    'trakt',
+    'steam',
+    'melon',
+    'hongguo',
+    'qq_music',
+]
+
+const SEARCHABLE = new Set(['auto', 'douban', 'imdb', 'tmdb', 'bangumi', 'trakt', 'steam'])
+
+const STEP_ITEMS = [
+    {key: 'paste', icon: 'link'},
+    {key: 'fetch', icon: 'database'},
+    {key: 'copy', icon: 'copy'},
+]
+
+function loadTheme() {
+    const stored = localStorage.getItem(THEME_KEY)
+    return ['light', 'dark', 'system'].includes(stored) ? stored : 'system'
+}
+
+function isDarkTheme(theme) {
+    if (theme === 'dark') return true
+    if (theme === 'light') return false
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+}
+
+/** 从链接推断所属数据源，用于校验与手动选择的数据源是否一致 */
+function detectUrlSource(rawUrl) {
+    let parsed
+    try {
+        parsed = new URL(rawUrl)
+    } catch {
+        return null
+    }
+
+    const host = parsed.hostname.toLowerCase()
+    // 必须按域名边界匹配：`fake-imdb.com` 不能被当成 IMDb，否则会把无效链接送去解析
+    const under = (domain) => host === domain || host.endsWith(`.${domain}`)
+    if (under('book.douban.com')) return 'douban_book'
+    if (under('douban.com')) return 'douban'
+    if (under('imdb.com')) return 'imdb'
+    if (under('bgm.tv') || under('bangumi.tv')) return 'bangumi'
+    if (under('themoviedb.org')) return 'tmdb'
+    if (under('trakt.tv')) return 'trakt'
+    if (under('steampowered.com')) return 'steam'
+    if (under('melon.com')) return 'melon'
+    if (host === 'y.qq.com') return 'qq_music'
+    if (under('novelquickapp.com') || under('hongguoduanju.com')) return 'hongguo'
+    return null
+}
+
+function classifyInput(rawInput, source) {
+    const value = rawInput.trim()
+    if (!value) return null
+
+    const explicit = source !== 'auto'
+
+    if (/^https?:\/\//i.test(value)) {
+        const detected = detectUrlSource(value)
+        if (explicit && detected && detected !== source) {
+            return {kind: 'mismatch', source, detected}
         }
-    }, [showCopyNotification]);
+        return {kind: 'direct', url: value, source: explicit ? source : 'auto'}
+    }
 
-    /**
-     * Generate HMAC-SHA256 authentication signature
-     * 生成 HMAC-SHA256 认证签名
-     * @returns {Promise<{timestamp: number, signature: string}>} Object containing timestamp and Base64URL-encoded signature
-     *                                                           包含时间戳和 Base64URL 编码签名的对象
-     * @throws {Error} Throws error if VITE_AUTH_SECRET is not configured
-     *                如果未配置 VITE_AUTH_SECRET 则抛出错误
-     */
-    const generateAuthSignature = async () => {
-        const AUTH_SECRET = import.meta.env["VITE_AUTH_SECRET"];
+    if (/^tt\d{7,9}$/i.test(value)) {
+        if (explicit && source !== 'imdb') return {kind: 'mismatch', source, detected: 'imdb'}
+        return {kind: 'direct', source: 'imdb', sid: value}
+    }
 
-        if (!AUTH_SECRET) {
-            throw new Error("VITE_AUTH_SECRET 未配置，请检查 frontend/.env 文件");
+    if (/^(movie|tv|show|movies|shows):/i.test(value)) {
+        if (explicit && source !== 'tmdb' && source !== 'trakt') {
+            return {kind: 'mismatch', source, detected: 'tmdb'}
         }
+        return {kind: 'direct', source: source === 'trakt' ? 'trakt' : 'tmdb', sid: value}
+    }
 
-        const timestamp = Date.now();
-        const encoder = new TextEncoder();
-        const key = await crypto.subtle.importKey(
-            "raw",
-            encoder.encode(AUTH_SECRET),
-            {name: "HMAC", hash: "SHA-256"},
-            false,
-            ["sign"]
-        );
-        const signature = await crypto.subtle.sign(
-            "HMAC",
-            key,
-            encoder.encode(timestamp.toString())
-        );
-        const signatureBase64 = btoa(String.fromCharCode(...new Uint8Array(signature)))
-            .replace(/\+/g, '-')
-            .replace(/\//g, '_')
-            .replace(/=/g, '');
+    if (/^\d{4,12}$/.test(value)) {
+        return {kind: 'direct', source: explicit ? source : 'douban', sid: value}
+    }
 
-        logger.debug("🔐 签名生成成功", {
-            timestamp: new Date(timestamp).toLocaleString(),
-            signaturePrefix: signatureBase64.slice(0, 20) + "..."
-        });
+    if (explicit) {
+        if (!SEARCHABLE.has(source)) return {kind: 'unsupported-search', source}
+        return {kind: 'search', source}
+    }
 
-        return {
-            timestamp,
-            signature: signatureBase64
-        };
-    };
+    return {kind: 'search', source: 'auto'}
+}
 
-    /**
-     * Build API request parameters from user input
-     * 从用户输入构建 API 请求参数
-     * @param {string} input - User input string (URL, Chinese text, or ID)
-     *                        用户输入字符串(URL、中文文本或ID)
-     * @returns {{url: string}|{source: string, query: string}} Object containing either direct URL or source and query parameters
-     *                                                         包含直接URL或来源和查询参数的对象
-     * @throws {Error} Throws error if input is not a non-empty string
-     *                如果输入不是非空字符串则抛出错误
-     */
-    const buildApiUrl = (input) => {
-        if (typeof input !== 'string' || !input.trim()) {
-            throw new Error('buildApiUrl: 输入必须是非空字符串');
-        }
+function splitSid(item) {
+    const sid = String(item.sid ?? item.id ?? '')
+    if (item.site === 'tmdb' || item.site === 'trakt') {
+        const [type, id] = sid.includes(':') ? sid.split(':') : ['', sid]
+        return {sid: id || sid, type: type || undefined}
+    }
+    return {sid, type: undefined}
+}
 
-        const trimmedInput = input.trim();
+function formatRating(value) {
+    if (value === undefined || value === null || value === '') return ''
+    const numeric = Number(value)
+    if (Number.isFinite(numeric) && numeric > 0) return numeric.toFixed(1)
+    return String(value)
+}
 
-        try {
-            if (/^https?:\/\//.test(trimmedInput)) {
-                new URL(trimmedInput);
-                return {url: trimmedInput};
-            }
-        } catch {
-            logger.debug("🔗 输入不是有效的 URL，尝试使用豆瓣搜索", trimmedInput);
-        }
+function errorText(error, t) {
+    if (!error) return ''
+    switch (error.type) {
+        case 'UNAUTHORIZED':
+        case 'FORBIDDEN':
+            return t('error.auth')
+        case 'AUTH_CHALLENGE':
+            return t('error.authChallenge')
+        case 'RATE_LIMITED':
+            return t('error.rate')
+        case 'NOT_FOUND':
+            return t('error.notFound')
+        case 'UPSTREAM_BLOCKED':
+        case 'UPSTREAM_CHALLENGE':
+            return t('error.blocked')
+        case 'DOUBAN_COOKIE_EXPIRED':
+            return t('error.doubanCookie')
+        case 'CONFIG_REQUIRED':
+        case 'NOT_IMPLEMENTED':
+            return t('error.config')
+        case 'NEED_LINK':
+            return t('error.needLink')
+        case 'SOURCE_MISMATCH':
+            return t('error.sourceMismatch', {
+                source: t(`source.${error.details?.source ?? 'auto'}`),
+                detected: t(`source.${error.details?.detected ?? 'auto'}`),
+            })
+        case 'UPSTREAM_TIMEOUT':
+        case 'TIMEOUT':
+            return t('error.timeout')
+        case 'NETWORK_ERROR':
+            return t('error.network')
+        default:
+            return error.message || t('error.unknown')
+    }
+}
 
-        if (isChineseText(trimmedInput)) {
-            return {source: "douban", query: trimmedInput};
-        }
-
-        return {source: "imdb", query: trimmedInput};
-    };
-
-    /**
-     * Reset all component states to initial values
-     * 重置所有组件状态为初始值
-     */
-    const resetStates = () => {
-        setError(null);
-        setResult("");
-        setFormattedResult(null);
-        setSearchResults(null);
-        setLastSearchSource(null);
-    };
-
-    /**
-     * Handle search results from API response
-     * 处理来自 API 响应的搜索结果
-     * @param {Object} data - Search response data containing results array and site information
-     *                       包含结果数组和站点信息的搜索响应数据
-     */
-    const handleSearchResults = (data) => {
-        if (data.data?.length > 0) {
-            setSearchResults(data.data);
-            setLastSearchSource(data.site);
-            setResult("");
-            setFormattedResult(null);
-        } else {
-            setError("未找到相关结果");
-            setSearchResults(null);
-            setLastSearchSource(null);
-            setResult("");
-            setFormattedResult(null);
-        }
-    };
-
-    /**
-     * Handle direct result from API response (non-search mode)
-     * 处理来自 API 响应的直接结果(非搜索模式)
-     * @param {Object} data - Result data containing format, site, and ID information
-     *                       包含格式、站点和ID信息的结果数据
-     */
-    const handleDirectResult = (data) => {
-        setResult(data.format || "");
-        setFormattedResult({
-            format: data.format || "",
-            site: data.site || "",
-            id: data.sid || data.id || "",
-        });
-        setSearchResults(null);
-        setLastSearchSource(null);
-    };
-
-    /**
-     * Check if error is related to rate limiting or server issues
-     * 检查错误是否与速率限制或服务器问题相关
-     * @param {{ status?: number | string; message?: string }} [err] - Error object with status code and/or message
-     *                            包含状态码和/或消息的错误对象
-     * @returns {boolean} True if error indicates rate limit, timeout, or server error
-     *                   如果错误表示速率限制、超时或服务器错误则返回 true
-     */
-    const isRateLimitError = (err) => {
-        const status = err?.status;
-        if (status === 429 || status === 400 || status === 401 || status === 500) {
-            return true;
-        }
-
-        const message = err?.message;
-        if (message && (
-            message.includes("超时") ||
-            message.includes("timeout") ||
-            message.includes("AbortError") ||
-            message.includes("500") ||
-            message.includes("internal error")
-        )) {
-            return true;
-        }
-
-        return !!(
-            message &&
-            (message.includes("429") ||
-                message.includes("400") ||
-                message.includes("401") ||
-                message.includes("500") ||
-                message.includes("Too Many Requests") ||
-                message.includes("请求过于频繁") ||
-                message.includes("豆瓣 API"))
-        );
-    };
-
-    /**
-     * Gets the display label for a site identifier
-     * 获取站点标识符的显示标签
-     * @param {string} site - Site identifier (e.g., 'douban', 'imdb', 'tmdb')
-     *                      站点标识符(如 'douban'、'imdb'、'tmdb')
-     * @returns {string} Chinese display label for known sites, or original value if unknown
-     *                  已知站点的中文显示标签,未知则返回原始值
-     */
-    const getSiteLabel = (site) => {
-        const siteMap = {
-            hongguo: "红果短剧",
-            douban: "豆瓣电影",
-            douban_book: "豆瓣读书",
-            imdb: "IMDb",
-            tmdb: "TMDb",
-            bangumi: "Bangumi",
-            steam: "Steam",
-            melon: "Melon",
-            qq_music: "QQ音乐",
-            trakt: "Trakt",
-        };
-
-        return siteMap[site] || site;
-    };
-
-    /**
-     * Determines if text is primarily Chinese by comparing character counts
-     * 通过比较字符数量判断文本是否主要为中文
-     * @param {string} text - Text to analyze
-     *                      要分析的文本
-     * @returns {boolean} True if Chinese characters outnumber English letters
-     *                   如果中文字符数量多于英文字母则返回 true
-     */
-    const isChineseText = (text) => {
-        const chineseChars = text.match(/[\u4e00-\u9fa5]/g) || [];
-        const englishChars = text.match(/[a-zA-Z]/g) || [];
-        return chineseChars.length > englishChars.length;
-    };
-
-    /**
-     * Fetches data from Douban with automatic TMDB fallback on rate limit errors
-     * 从豆瓣获取数据,在速率限制错误时自动回退到 TMDB
-     * @param {Object} params - Request parameters containing source and query
-     *                        包含来源和查询的请求参数
-     * @returns {Promise<Object>} API response data from Douban or TMDB
-     *                           来自豆瓣或 TMDB 的 API 响应数据
-     * @throws {Error} Throws error if both Douban and TMDB requests fail
-     *                如果豆瓣和 TMDB 请求都失败则抛出错误
-     */
-    const fetchWithTMDBFallback = async (params) => {
-        try {
-            return await fetchApiData("/api/getData", params);
-        } catch (err) {
-            const shouldTryTMDB = isRateLimitError(err) && params.query;
-
-            if (!shouldTryTMDB) {
-                throw err;
-            }
-
-            logger.debug("豆瓣请求失败 (限流或超时),尝试使用 TMDB...");
-            return await fetchApiData("/api/getData", {
-                source: "tmdb",
-                query: params.query,
-            });
-        }
-    };
-
-    /**
-     * Fetches API data with HMAC-SHA256 authentication and timeout handling
-     * 使用 HMAC-SHA256 认证和超时处理获取 API 数据
-     * @param {string} apiUrl - API endpoint URL
-     *                        API 端点 URL
-     * @param {Object} params - Request parameters object
-     *                        请求参数对象
-     * @param {number} timeout - Timeout in milliseconds (default: 30000ms / 30s)
-     *                         超时时间(毫秒),默认 30000ms / 30秒
-     * @returns {Promise<Object>} API response data
-     *                           API 响应数据
-     * @throws {Error} Throws error if request fails, times out, or authentication fails
-     *                如果请求失败、超时或认证失败则抛出错误
-     */
-    const fetchApiData = async (apiUrl, params = {}, timeout = 30000) => {
-        const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-
-        let fetchError = null;
-        const controller = new AbortController();
-        let timeoutId = null;
-
-        try {
-            const {timestamp, signature} = await generateAuthSignature();
-
-            let finalTimeout = timeout;
-            if (apiUrl.includes("melon") || apiUrl.includes("melon.com")) {
-                finalTimeout = Math.max(timeout, 180000);
-                logger.debug(`🎵 Melon 请求，超时延长至 ${finalTimeout / 1000}秒`);
-            }
-
-            timeoutId = setTimeout(() => {
-                fetch("/api/cancel", {
-                    method: "POST",
-                    headers: {"Content-Type": "application/json"},
-                    body: JSON.stringify({requestId}),
-                }).catch(() => {
-                });
-                controller.abort();
-            }, finalTimeout);
-
-            logger.debug("📡 发送请求", {
-                url: apiUrl,
-                timestamp: new Date(timestamp).toLocaleString(),
-                signaturePrefix: signature.slice(0, 20) + "..."
-            });
-
-            const response = await fetch(apiUrl, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "X-Timestamp": timestamp.toString(),
-                    "X-Signature": signature
-                },
-                body: JSON.stringify({...params, requestId}),
-                signal: controller.signal,
-            });
-
-            if (!response.ok) {
-                const errText = await response.text();
-                fetchError = new Error(`API 请求失败：${response.status} - ${errText}`);
-            } else {
-                return await response.json();
-            }
-        } catch (error) {
-            if (error.name === "AbortError") {
-                fetchError = new Error("请求超时，请重试");
-            } else {
-                fetchError = error;
-            }
-        } finally {
-            if (timeoutId) clearTimeout(timeoutId);
-        }
-
-        if (fetchError) {
-            throw fetchError;
-        }
-    };
-
-    /**
-     * Performs search with Douban/TMDB fallback strategy
-     * 执行搜索,使用豆瓣/TMDB 回退策略
-     * @param {Object} params - Search parameters including source type
-     *                        包含来源类型的搜索参数
-     * @returns {Promise<Object>} Search results from primary or fallback source
-     *                           来自主要或回退来源的搜索结果
-     */
-    const performSearch = async (params) => {
-        const isDoubanSource = params.source === "douban";
-        if (isDoubanSource) {
-            return await fetchWithTMDBFallback(params);
-        }
-        return await fetchApiData("/api/getData", params);
-    };
-
-    /**
-     * Processes API response and handles errors or routes to appropriate handler
-     * 处理 API 响应,处理错误或路由到适当的处理器
-     * @param {Object} data - Response data from API
-     *                      来自 API 的响应数据
-     * @returns {boolean} True if processing succeeded, false if error occurred
-     *                   如果处理成功返回 true,发生错误返回 false
-     */
-    const processApiResponse = (data) => {
-        if (data.success === false) {
-            setError(data.error || "搜索失败");
-            setSearchResults(null);
-            setLastSearchSource(null);
-            setResult("");
-            setFormattedResult(null);
-            setShowCopyNotification(false);
-            return false;
-        }
-
-        if (data.site && data.site.startsWith("search-")) {
-            handleSearchResults(data);
-        } else {
-            handleDirectResult(data);
-        }
-        return true;
-    };
-
-    /**
-     * Handles form submission and orchestrates the search flow
-     * 处理表单提交并协调搜索流程
-     * @param {Event} e - Form submit event
-     *                  表单提交事件
-     */
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        if (!url) return;
-
-        resetStates();
-        setLoading(true);
-
-        try {
-            const params = buildApiUrl(url);
-            if (!params) {
-                setError("无效的输入");
-                return;
-            }
-
-            const data = await performSearch(params);
-
-            if (!processApiResponse(data)) {
-                setLoading(false);
-            }
-        } catch (err) {
-            console.error("提交错误:", err);
-            setError(err.message || "搜索失败");
-            setSearchResults(null);
-            setLastSearchSource(null);
-            setResult("");
-            setFormattedResult(null);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    /**
-     * Builds API request parameters by matching link against site strategies
-     * 通过将链接与站点策略匹配来构建 API 请求参数
-     * @param {string} link - Input link to parse
-     *                      要解析的输入链接
-     * @returns {Object} Transformed parameters object based on matched strategy, or original URL if no match
-     *                  基于匹配策略的转换后参数对象,如果没有匹配则返回原始 URL
-     */
-    const buildSelectApiUrl = (link) => {
-        if (!link || typeof link !== 'string') {
-            return {};
-        }
-
-        for (const strategy of SITE_STRATEGIES) {
-            const match = link.match(strategy.regex);
-            if (match) {
-                return strategy.transform(match);
-            }
-        }
-
-        return {url: link};
-    };
-
-    /**
-     * Handles link processing and API response for direct result or search results
-     * 处理链接和 API 响应,用于直接结果或搜索结果
-     * @param {string} link - Input link to process
-     *                      要处理的输入链接
-     */
-    const handleSelectResult = async (link) => {
-        const handleError = (msg) => {
-            setError(msg);
-            setResult("");
-            setFormattedResult(null);
-        };
-
-        resetStates();
-        setLoading(true);
-
-        try {
-            const params = buildSelectApiUrl(link);
-            if (!params || Object.keys(params).length === 0) {
-                handleError("无效的链接");
-                return;
-            }
-
-            const data = await fetchApiData("/api/getData", params);
-
-            if (!data || data.success === false) {
-                handleError(data?.error || "搜索失败");
-                return;
-            }
-
-            if (data.site?.startsWith("search-")) {
-                handleSearchResults(data);
-            } else {
-                const resultData = {
-                    format: data.format || "",
-                    site: data.site || "",
-                    id: data.sid || data.id || "",
-                };
-                setResult(resultData.format);
-                setFormattedResult(resultData);
-            }
-        } catch (err) {
-            console.error("系统错误:", err);
-            handleError("处理链接时发生系统错误");
-        } finally {
-            setSearchResults(null);
-            setLastSearchSource(null);
-            setLoading(false);
-            setShowCopyNotification(false);
-        }
-    };
-
-    /**
-     * Copies result text to clipboard and shows notification
-     * 复制结果文本到剪贴板并显示通知
-     */
-    const handleCopy = async () => {
-        if (!result) return;
-        try {
-            await navigator.clipboard.writeText(result);
-            setShowCopyNotification(true);
-        } catch (err) {
-            console.error("复制失败");
-        }
-    };
-
-    /**
-     * Clears all form fields and resets states to initial values
-     * 清除所有表单字段并将状态重置为初始值
-     */
-    const handleClear = () => {
-        setUrl("");
-        setResult("");
-        setFormattedResult(null);
-        setSearchResults(null);
-        setLastSearchSource(null);
-        setError(null);
-    };
-
-    /**
-     * 渲染搜索项标题 (Render search item title)
-     * @param {Object} item - 搜索结果项 (Search result item)
-     * @returns {JSX.Element} 标题内容 (Title content)
-     */
-    const searchItemTitle = (item) => {
-        console.log(item)
-        let result;
-        if (item.subtitle) {
-            result = item.subtitle;
-        } else {
-            result = (
-                <>
-                    {item.abstract}
-                    <br/>
-                    {item.actors}
-                </>
-            );
-        }
-
-        return (
-            <p className="text-xs text-gray-500">
-                {result}
-            </p>
-        );
-    };
-
-    /**
-     * Renders a single search result item with clickable link and metadata
-     * 渲染单个搜索结果项,包含可点击链接和元数据
-     * @param {Object} item - Search result item data
-     *                      搜索结果项数据
-     * @param {number} index - Item index for key generation
-     *                       用于生成 key 的项索引
-     * @returns {React.JSX.Element} Search result list item element
-     *                             搜索结果列表项元素
-     */
-    const renderSearchResultItem = (item, index) => (
-        <li
-            key={index}
-            className="border-b border-gray-200 pb-2 last:border-0 last:pb-0"
-        >
-            <button
-                onClick={() => handleSelectResult(item.link || item.url)}
-                className="text-indigo-600 hover:text-indigo-900 text-sm text-left w-full flex justify-between items-center"
-            >
-            <span>
-                {item.title}
-                {item.year && <span className="text-gray-500 ml-2">({item.year})</span>}
-            </span>
-
-                {/* 徽章统一包裹在右侧 flex 容器中，无论是否有内容都保持右对齐 */}
-                <div className="flex items-center space-x-2">
-                    {renderEpisodeInfo(item)}
-                    {renderRatingInfo(item)}
-                </div>
-            </button>
-
-            <div className="flex justify-between items-center mt-1">
-                <div className="flex-1 min-w-0">
-                    {searchItemTitle(item)}
-                </div>
-
-                {item.subtype && (
-                    <span className="text-xs text-gray-400 ml-2 flex-shrink-0">
-                        {getSubtypeLabel(item.subtype)}
-                    </span>
-                )}
-            </div>
-        </li>
-    );
-
-    /**
-     * Renders episode information badge if available
-     * 如果有剧集信息则渲染剧集徽章
-     * @param {Object} item - Search result item containing episode data
-     *                      包含剧集数据的搜索结果项
-     * @returns {React.JSX.Element|null} Episode badge element or null if not available
-     *                                  剧集徽章元素,如果不可用则返回 null
-     */
-    const renderEpisodeInfo = (item) => {
-        if (!item.episode) return null;
-        return (
-            <span className="text-indigo-700 text-xs bg-yellow-50 pl-1.5 py-0.5 rounded">
-                {item.episode} 集
-            </span>
-        );
-    };
-
-    /**
-     * Renders rating information badge if available
-     * 如果有评分信息则渲染评分徽章
-     * @param {Object} item - Search result item containing rating data
-     *                      包含评分数据的搜索结果项
-     * @returns {React.JSX.Element|null} Rating badge element or null if not available
-     *                                  评分徽章元素,如果不可用则返回 null
-     */
-    const renderRatingInfo = (item) => {
-        if (!item.rating) return null;
-        const rating = item.rating === '暂无评分' || item.rating === '0' ? '暂无评分' : `${item.rating} / 10`;
-        return (
-            <span className="text-indigo-700 text-xs bg-yellow-50 pl-1.5 py-0.5 rounded">
-                {rating}
-            </span>
-        );
-    };
-
-    /**
-     * Gets the display label for a given subtype using mapping or returns default/original value
-     * 使用映射获取给定子类型的显示标签,或返回默认值/原始值
-     * @param {string} subtype - The subtype value to map
-     *                         要映射的子类型值
-     * @returns {string} Mapped label, default label if empty, or original subtype if no mapping exists
-     *                  映射后的标签,如果为空则返回默认标签,如果没有映射则返回原子类型
-     */
-    const getSubtypeLabel = (subtype) => {
-        if (!subtype) {
-            return DEFAULT_LABEL;
-        }
-
-        const key = String(subtype).toLowerCase();
-
-        return SUBTYPE_MAP[key] || subtype;
-    };
-
-    /**
-     * Gets the display label for a given search source using mapping or returns default value
-     * 使用映射获取给定搜索来源的显示标签,或返回默认值
-     * @param {string} source - The search source identifier
-     *                        搜索来源标识符
-     * @returns {string} Mapped source label or default label if not found/empty
-     *                  映射后的来源标签,如果未找到或为空则返回默认标签
-     */
-    const getSearchSourceLabel = (source) => {
-        if (!source) {
-            return DEFAULT_SOURCE_LABEL;
-        }
-
-        return SEARCH_SOURCE_MAP[source] || DEFAULT_SOURCE_LABEL;
-    };
+function Icon({name, className = 'h-5 w-5'}) {
+    const paths = {
+        search: <>
+            <circle cx="11" cy="11" r="7"/>
+            <path d="m20 20-3.5-3.5"/>
+        </>,
+        sparkles: <>
+            <path d="m12 3 1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6L12 3Z"/>
+            <path d="m19 15 .8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"/>
+        </>,
+        copy: <>
+            <rect x="9" y="9" width="11" height="11" rx="2"/>
+            <path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>
+        </>,
+        check: <path d="m5 13 4 4L19 7"/>,
+        x: <>
+            <path d="M18 6 6 18"/>
+            <path d="m6 6 12 12"/>
+        </>,
+        settings: <>
+            <circle cx="12" cy="12" r="3"/>
+            <path
+                d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1Z"/>
+        </>,
+        sun: <>
+            <circle cx="12" cy="12" r="4"/>
+            <path
+                d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+        </>,
+        moon: <path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/>,
+        github: <>
+            <path
+                d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.4 5.4 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/>
+            <path d="M9 18c-4.51 2-5-2-7-2"/>
+        </>,
+        chevron: <path d="m9 18 6-6-6-6"/>,
+        chevronDown: <path d="m6 9 6 6 6-6"/>,
+        alert: <>
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M12 8v4M12 16h.01"/>
+        </>,
+        trash: <>
+            <path d="M3 6h18"/>
+            <path d="M8 6V4h8v2"/>
+            <path d="M19 6l-1 14H6L5 6"/>
+            <path d="M10 11v5M14 11v5"/>
+        </>,
+        refresh: <>
+            <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+            <path d="M21 3v5h-5"/>
+            <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+            <path d="M3 21v-5h5"/>
+        </>,
+        globe: <>
+            <circle cx="12" cy="12" r="9"/>
+            <path d="M3 12h18M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18Z"/>
+        </>,
+        link: <>
+            <path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1"/>
+            <path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1"/>
+        </>,
+        database: <>
+            <ellipse cx="12" cy="5" rx="8" ry="3"/>
+            <path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/>
+            <path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>
+        </>,
+        cpu: <>
+            <rect x="4" y="4" width="16" height="16" rx="2"/>
+            <rect x="9" y="9" width="6" height="6" rx="1"/>
+            <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/>
+        </>,
+        layers: <>
+            <path d="m12 2 9 4.5-9 4.5L3 6.5 12 2Z"/>
+            <path d="m3 12 9 4.5 9-4.5"/>
+            <path d="m3 17.5 9 4.5 9-4.5"/>
+        </>,
+        film: <>
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <path d="M7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4"/>
+        </>,
+    }
 
     return (
-        <div className="min-h-screen bg-gray-50">
-            <header className="bg-transparent">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                    <div className="flex justify-between items-center h-16">
-                        <div className="flex items-center">
-                            <img
-                                src="/logo.png"
-                                alt="PT-Gen Logo"
-                                className="h-8 w-8 mr-2"
-                            />
-                            <h1 className="text-xl font-medium text-gray-900">PT-Gen</h1>
-                        </div>
-                        <nav className="flex space-x-4">
-                            <a
-                                href="https://github.com/rabbitwit/PT-Gen-Refactor"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="flex items-center space-x-2 rounded-md bg-gray-100 px-3 py-2 text-sm hover:bg-gray-200"
-                            >
-                                <svg
-                                    className="h-5 w-5"
-                                    xmlns="http://www.w3.org/2000/svg"
-                                    width="24"
-                                    height="24"
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="2"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                >
-                                    <path
-                                        d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"></path>
-                                    <path d="M9 18c-4.51 2-5-2-7-2"></path>
-                                </svg>
-                                <span>GitHub</span>
-                            </a>
-                        </nav>
-                    </div>
-                </div>
-            </header>
-            <main className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
-                <div className="bg-white shadow rounded-lg p-5 mb-5">
-                    <form onSubmit={handleSubmit} className="space-y-4">
-                        <div>
-                            <label
-                                htmlFor="url"
-                                className="block text-sm font-medium text-gray-700 mb-1"
-                            >
-                                资源链接
-                            </label>
-                            <input
-                                type="text"
-                                id="url"
-                                value={url}
-                                onChange={(e) => setUrl(e.target.value)}
-                                placeholder="请输入资源链接或搜索关键词"
-                                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm px-3 py-2 border"
-                            />
-                        </div>
-                        <div className="flex items-center">
+        <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={className}
+            aria-hidden="true"
+        >
+            {paths[name] ?? null}
+        </svg>
+    )
+}
+
+function useDismiss(open, containerRef, setOpen) {
+    useEffect(() => {
+        if (!open) return
+
+        const handlePointer = (event) => {
+            if (!containerRef.current?.contains(event.target)) setOpen(false)
+        }
+        const handleKey = (event) => {
+            if (event.key === 'Escape') setOpen(false)
+        }
+
+        document.addEventListener('mousedown', handlePointer)
+        document.addEventListener('touchstart', handlePointer)
+        document.addEventListener('keydown', handleKey)
+
+        return () => {
+            document.removeEventListener('mousedown', handlePointer)
+            document.removeEventListener('touchstart', handlePointer)
+            document.removeEventListener('keydown', handleKey)
+        }
+    }, [open, containerRef, setOpen])
+}
+
+function LanguageMenu({language, onChange, t}) {
+    const [open, setOpen] = useState(false)
+    const containerRef = useRef(null)
+    const current = LANGUAGES.find((item) => item.code === language) ?? LANGUAGES[0]
+
+    useDismiss(open, containerRef, setOpen)
+
+    return (
+        <div className="relative" ref={containerRef}>
+            <button
+                type="button"
+                onClick={() => setOpen((value) => !value)}
+                aria-haspopup="listbox"
+                aria-expanded={open}
+                aria-label={t('language.toggle')}
+                title={t('language.toggle')}
+                className="flex h-9 items-center gap-1.5 rounded-full border border-zinc-200/80 bg-white/70 pl-2.5 pr-2 text-xs font-medium text-zinc-600 shadow-sm transition hover:border-zinc-300 hover:text-zinc-900 dark:border-white/10 dark:bg-white/5 dark:text-zinc-300 dark:hover:border-white/20 dark:hover:text-white"
+            >
+                <Icon name="globe" className="h-4 w-4"/>
+                <span className="hidden sm:inline">{current.label}</span>
+                <span className="sm:hidden">{current.short}</span>
+                <Icon
+                    name="chevronDown"
+                    className={`h-3.5 w-3.5 text-zinc-400 transition-transform ${open ? 'rotate-180' : ''}`}
+                />
+            </button>
+
+            {open && (
+                <div
+                    role="listbox"
+                    aria-label={t('settings.language')}
+                    className="absolute right-0 top-full z-50 mt-2 w-44 rounded-2xl border border-zinc-200/80 bg-white p-1.5 shadow-xl shadow-zinc-950/10 dark:border-white/10 dark:bg-zinc-900 dark:shadow-black/40"
+                >
+                    {LANGUAGES.map((item) => {
+                        const active = item.code === language
+                        return (
                             <button
-                                type="submit"
-                                disabled={loading}
-                                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
-                            >
-                                {loading ? (
-                                    <>
-                                        <svg
-                                            className="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
-                                            xmlns="http://www.w3.org/2000/svg"
-                                            fill="none"
-                                            viewBox="0 0 24 24"
-                                        >
-                                            <circle
-                                                className="opacity-25"
-                                                cx="12"
-                                                cy="12"
-                                                r="10"
-                                                stroke="currentColor"
-                                                strokeWidth="4"
-                                            ></circle>
-                                            <path
-                                                className="opacity-75"
-                                                fill="currentColor"
-                                                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                                            ></path>
-                                        </svg>
-                                        查询中...
-                                    </>
-                                ) : (
-                                    "查询"
-                                )}
-                            </button>
-                            <button
+                                key={item.code}
                                 type="button"
-                                onClick={handleClear}
-                                className="ml-2 inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                                role="option"
+                                aria-selected={active}
+                                onClick={() => {
+                                    onChange(item.code)
+                                    setOpen(false)
+                                }}
+                                className={`flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-left text-[13px] transition ${
+                                    active
+                                        ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900'
+                                        : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-white/5'
+                                }`}
                             >
-                                清空
+                                <span>{item.label}</span>
+                                {active && <Icon name="check" className="h-3.5 w-3.5"/>}
                             </button>
-                        </div>
-                    </form>
+                        )
+                    })}
                 </div>
+            )}
+        </div>
+    )
+}
 
-                {error && (
-                    <div className="bg-red-50 border-l-4 border-red-400 p-4 mb-4">
-                        <div className="flex">
-                            <div className="flex-shrink-0">
-                                <svg
-                                    className="h-5 w-5 text-red-400"
-                                    xmlns="http://www.w3.org/2000/svg"
-                                    viewBox="0 0 20 20"
-                                    fill="currentColor"
+function SourceMenu({value, onChange, t}) {
+    const [open, setOpen] = useState(false)
+    const containerRef = useRef(null)
+
+    useDismiss(open, containerRef, setOpen)
+
+    return (
+        <div className="relative flex-none" ref={containerRef}>
+            <button
+                type="button"
+                onClick={() => setOpen((current) => !current)}
+                aria-haspopup="listbox"
+                aria-expanded={open}
+                aria-label={t('source.label')}
+                title={t('source.label')}
+                className={`flex h-10 items-center gap-1.5 rounded-full px-3 text-[13px] font-medium transition sm:h-11 ${
+                    open
+                        ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900'
+                        : 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200/80 dark:bg-white/8 dark:text-zinc-200 dark:hover:bg-white/12'
+                }`}
+            >
+                <Icon name="database" className="h-4 w-4 flex-none text-zinc-400"/>
+                <span className="max-w-[8.5rem] truncate">{t(`source.${value}`)}</span>
+                <Icon
+                    name="chevronDown"
+                    className={`h-4 w-4 flex-none text-zinc-400 transition-transform ${open ? 'rotate-180' : ''}`}
+                />
+            </button>
+
+            {open && (
+                <div
+                    role="listbox"
+                    aria-label={t('source.label')}
+                    className="absolute right-0 top-full z-[80] mt-2 w-64 overflow-hidden rounded-2xl border border-zinc-200/80 bg-white p-1.5 shadow-2xl shadow-zinc-950/10 dark:border-white/10 dark:bg-zinc-900 dark:shadow-black/50"
+                >
+                    <p className="px-2.5 pb-1.5 pt-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+                        {t('source.label')}
+                    </p>
+                    <div className="max-h-[18rem] overflow-y-auto">
+                        {SOURCE_OPTIONS.map((option) => {
+                            const active = option === value
+                            return (
+                                <button
+                                    key={option}
+                                    type="button"
+                                    role="option"
+                                    aria-selected={active}
+                                    onClick={() => {
+                                        onChange(option)
+                                        setOpen(false)
+                                    }}
+                                    className={`flex w-full items-center justify-between gap-2 rounded-xl px-2.5 py-2 text-left text-[13px] transition ${
+                                        active
+                                            ? 'bg-zinc-900 font-medium text-white dark:bg-white dark:text-zinc-900'
+                                            : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-white/5'
+                                    }`}
                                 >
-                                    <path
-                                        fillRule="evenodd"
-                                        d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-                                        clipRule="evenodd"
-                                    />
-                                </svg>
-                            </div>
-                            <div className="ml-3">
-                                <p className="text-sm text-red-700">{error}</p>
-                            </div>
-                        </div>
-                    </div>
-                )}
-
-                {searchResults && searchResults.length > 0 && (
-                    <div className="bg-white shadow rounded-lg p-5 mb-5">
-                        <div className="flex justify-between items-center mb-3">
-                            <h3 className="text-lg font-medium text-gray-900">搜索结果</h3>
-                            <span className="text-sm text-gray-500">
-                                {getSearchSourceLabel(lastSearchSource)}
-                            </span>
-                        </div>
-                        <ul className="space-y-2">
-                            {searchResults.map(renderSearchResultItem)}
-                        </ul>
-                    </div>
-                )}
-
-                {result && (
-                    <div className="bg-white shadow rounded-lg p-5">
-                        <div className="flex justify-between items-center mb-3">
-                            <div className="flex items-center">
-                                <h3 className="text-lg font-medium text-gray-900">
-                                    格式化结果
-                                </h3>
-                                {formattedResult && formattedResult.site && (
-                                    <span className="ml-2 px-2 py-1 text-xs bg-indigo-100 text-indigo-800 rounded-full">
-                                        来源: {getSiteLabel(formattedResult.site)}
-                                    </span>
-                                )}
-                            </div>
-                            <button
-                                onClick={handleCopy}
-                                className="inline-flex items-center px-3 py-1 border border-transparent text-sm font-medium rounded-md text-indigo-700 bg-indigo-100 hover:bg-indigo-200"
-                            >
-                                <svg
-                                    className="h-4 w-4 mr-1"
-                                    xmlns="http://www.w3.org/2000/svg"
-                                    fill="none"
-                                    viewBox="0 0 24 24"
-                                    stroke="currentColor"
-                                >
-                                    <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                                    />
-                                </svg>
-                                复制
-                            </button>
-                        </div>
-                        <div className="bg-gray-50 p-4 rounded-md overflow-x-auto">
-                            <pre className="text-sm text-gray-800 whitespace-pre-wrap">
-                                {result}
-                            </pre>
-                        </div>
-                    </div>
-                )}
-
-                <div className="bg-white shadow rounded-lg p-5 mt-5">
-                    <h3 className="text-lg font-medium text-gray-900 mb-3">使用说明</h3>
-                    <ul className="list-disc pl-5 space-y-1 text-sm text-gray-600">
-                        <li>
-                            支持多种资源站点：
-                            <ul className="list-disc pl-5 mt-1 space-y-1">
-                                <li>豆瓣：电影、电视剧、读书</li>
-                                <li>红果短剧：短剧链接</li>
-                                <li>IMDb：电影、电视剧</li>
-                                <li>TMDb：电影、电视剧</li>
-                                <li>Bangumi：动画</li>
-                                <li>Steam：游戏链接</li>
-                                <li>Melon：音乐专辑链接</li>
-                                <li>QQ音乐：音乐专辑链接</li>
-                            </ul>
-                        </li>
-                        <li>
-                            输入名称时会自动根据语言选择搜索源（中文名使用豆瓣如果失败则回退TMDB，英文名使用IMDB）
-                        </li>
-                        <li>点击"查询"按钮获取格式化结果</li>
-                        <li>在搜索结果中选择匹配的条目</li>
-                        <li>复制生成的格式化内容到PT站点发布资源</li>
-                    </ul>
-
-                    <h4 className="text-sm font-medium text-gray-900 mt-3 mb-2">
-                        功能特点
-                    </h4>
-                    <ul className="list-disc pl-5 space-y-1 text-sm text-gray-600">
-                        <li>支持多站点资源获取</li>
-                        <li>自动生成标准PT格式描述</li>
-                        <li>智能识别资源类型</li>
-                        <li>支持中英文搜索</li>
-                        <li>响应式设计，支持移动端使用</li>
-                    </ul>
-                </div>
-            </main>
-
-            {showCopyNotification && (
-                <div className="fixed inset-0 flex items-center justify-center pointer-events-none z-50">
-                    <div
-                        className="bg-purple-100 text-purple-800 px-4 py-2 rounded-md shadow-lg transform transition-all duration-300 ease-in-out"
-                    >
-                        <div className="flex items-center">
-                            <svg
-                                className="h-4 w-4 mr-2"
-                                xmlns="http://www.w3.org/2000/svg"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                            >
-                                <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    strokeWidth={2}
-                                    d="M5 13l4 4L19 7"
-                                />
-                            </svg>
-                            <span className="text-sm font-medium">已复制到剪贴板</span>
-                        </div>
+                                    <span>{t(`source.${option}`)}</span>
+                                    {active && <Icon name="check" className="h-3.5 w-3.5"/>}
+                                </button>
+                            )
+                        })}
                     </div>
                 </div>
             )}
         </div>
-    );
+    )
 }
 
-export default App;
+function StatusBadge({t, state}) {
+    let tone = 'bg-zinc-100 text-zinc-500 dark:bg-white/5 dark:text-zinc-400'
+    let dot = 'bg-zinc-400'
+    let label = t('status.unknown')
+
+    if (state === 'missing') {
+        tone = 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300'
+        dot = 'bg-amber-500'
+        label = t('features.missing')
+    } else if (state === 'configured') {
+        tone = 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'
+        dot = 'bg-emerald-500'
+        label = t('features.configured')
+    } else if (state === 'available') {
+        tone = 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'
+        dot = 'bg-emerald-500'
+        label = t('features.available')
+    }
+
+    return (
+        <span
+            className={`inline-flex flex-none items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${tone}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${dot}`}/>
+            {label}
+    </span>
+    )
+}
+
+function StatusPage({t, language, initialConfig}) {
+    const [health, setHealth] = useState(null)
+    const [liveConfig, setLiveConfig] = useState(initialConfig)
+    const [state, setState] = useState('loading')
+    const [checkedAt, setCheckedAt] = useState(null)
+    const [loadError, setLoadError] = useState('')
+
+    const check = useCallback(async () => {
+        setState('loading')
+        setLoadError('')
+        const [healthResult, configResult] = await Promise.allSettled([
+            request('/api/health', {skipAuth: true, timeout: 10000}),
+            getConfig(),
+        ])
+        const healthData = healthResult.status === 'fulfilled' ? healthResult.value : null
+        const configData = configResult.status === 'fulfilled' ? configResult.value : null
+        if (healthData) setHealth(healthData)
+        if (configData) setLiveConfig(configData)
+        setCheckedAt(new Date())
+        if (healthData) {
+            setState('ready')
+            return
+        }
+        const reason =
+            healthResult.status === 'rejected'
+                ? healthResult.reason
+                : configResult.status === 'rejected'
+                    ? configResult.reason
+                    : null
+        setLoadError(reason?.message || '')
+        setState('error')
+    }, [])
+
+    useEffect(() => {
+        void check()
+    }, [check])
+
+    const sources = liveConfig?.sources
+    const cacheLayers = Array.isArray(health?.cacheLayers) ? health.cacheLayers : []
+    const stateOf = (value, missing = 'available') => (!sources ? 'unknown' : value ? 'configured' : missing)
+    const base = sources ? 'available' : 'unknown'
+
+    const sourceRows = [
+        {key: 'douban', state: stateOf(Boolean(sources?.douban?.backend || sources?.douban?.cookie))},
+        {key: 'douban_book', state: base},
+        {key: 'imdb', state: stateOf(Boolean(sources?.imdb?.backend || sources?.imdb?.cookie))},
+        {key: 'tmdb', state: stateOf(Boolean(sources?.tmdb), 'missing')},
+        {key: 'trakt', state: stateOf(Boolean(sources?.trakt), 'missing')},
+        {key: 'bangumi', state: base},
+        {key: 'steam', state: base},
+        {key: 'melon', state: base},
+        {key: 'hongguo', state: base},
+        {key: 'qq_music', state: stateOf(Boolean(sources?.qq_music), 'missing')},
+    ]
+
+    const summaryRows = [
+        {label: t('status.runtime'), value: health?.runtime || '—'},
+        {label: t('status.version'), value: `v${health?.version || liveConfig?.version || '—'}`},
+        {
+            label: t('status.cache'),
+            value: cacheLayers.length ? cacheLayers.map((layer) => layer.toUpperCase()).join(' · ') : '—'
+        },
+    ]
+
+    const checkedLabel = checkedAt
+        ? checkedAt.toLocaleTimeString(language, {hour: '2-digit', minute: '2-digit', second: '2-digit'})
+        : '—'
+    const statusOk = state === 'ready'
+
+    return (
+        <div className="mx-auto max-w-5xl">
+            <button
+                type="button"
+                onClick={() => {
+                    window.location.hash = '/'
+                }}
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500 transition hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white"
+            >
+                <Icon name="chevron" className="h-3.5 w-3.5 rotate-180"/>
+                {t('status.back')}
+            </button>
+
+            <div className="mt-5 flex flex-wrap items-end justify-between gap-3">
+                <div>
+                    <h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">{t('status.title')}</h1>
+                    <p className="mt-1.5 text-sm text-zinc-500 dark:text-zinc-400">{t('status.subtitle')}</p>
+                </div>
+                <button
+                    type="button"
+                    onClick={() => void check()}
+                    disabled={state === 'loading'}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-full border border-zinc-200/80 bg-white/70 px-3 text-xs font-medium text-zinc-600 transition hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-60 dark:border-white/10 dark:bg-white/5 dark:text-zinc-300 dark:hover:border-white/20 dark:hover:text-white"
+                >
+                    <Icon name="refresh" className={`h-3.5 w-3.5 ${state === 'loading' ? 'animate-spin' : ''}`}/>
+                    {state === 'loading' ? t('status.checking') : t('status.refresh')}
+                </button>
+            </div>
+
+            <section className="card relative mt-6 overflow-hidden">
+                <div
+                    className={`pointer-events-none absolute inset-x-0 top-0 h-px ${
+                        statusOk
+                            ? 'bg-gradient-to-r from-transparent via-emerald-400/80 to-transparent'
+                            : state === 'error'
+                                ? 'bg-gradient-to-r from-transparent via-red-400/80 to-transparent'
+                                : 'bg-gradient-to-r from-transparent via-amber-400/80 to-transparent'
+                    }`}
+                />
+                <div className="flex flex-col lg:flex-row lg:items-stretch">
+                    <div className="flex min-w-0 flex-1 items-center gap-4 px-5 py-5 sm:px-6">
+            <span className="relative flex h-11 w-11 shrink-0 items-center justify-center">
+              <span
+                  className={`absolute inset-0 rounded-full opacity-30 blur-md ${
+                      statusOk ? 'bg-emerald-400' : state === 'error' ? 'bg-red-400' : 'bg-amber-400'
+                  }`}
+              />
+              <span
+                  className={`relative h-2.5 w-2.5 rounded-full ${
+                      statusOk ? 'bg-emerald-500' : state === 'error' ? 'bg-red-500' : 'animate-pulse bg-amber-400'
+                  }`}
+              />
+            </span>
+                        <div className="min-w-0">
+                            <p className="truncate text-[17px] font-semibold tracking-tight">
+                                {statusOk ? t('status.ok') : state === 'error' ? t('status.failed') : t('status.checking')}
+                            </p>
+                            <p className="mt-1 text-[12px] text-zinc-400 dark:text-zinc-500">{t('status.checkedAt', {time: checkedLabel})}</p>
+                            {state === 'error' && loadError ? (
+                                <p className="mt-2 font-mono text-[11px] leading-5 text-zinc-500 dark:text-zinc-400">{loadError}</p>
+                            ) : null}
+                        </div>
+                    </div>
+                    <div
+                        className="grid grid-cols-3 border-t border-zinc-200/70 dark:border-white/[0.06] lg:w-[min(100%,28rem)] lg:shrink-0 lg:border-t-0 lg:border-l lg:border-zinc-200/70 dark:lg:border-white/[0.06]">
+                        {summaryRows.map((row) => (
+                            <div
+                                key={row.label}
+                                className="flex flex-col justify-center px-4 py-4 sm:px-5 first:pl-5 last:pr-5"
+                            >
+                                <p className="text-[11px] font-medium text-zinc-400 dark:text-zinc-500">{row.label}</p>
+                                <p className="mt-1.5 truncate text-[15px] font-semibold tracking-tight text-zinc-900 dark:text-white">{row.value}</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </section>
+
+            <section className="card mt-4 p-5">
+                <div className="flex items-center justify-between">
+                    <h2 className="text-sm font-semibold">{t('status.sources')}</h2>
+                    <span className="text-[11px] text-zinc-400 dark:text-zinc-500">{sourceRows.length}</span>
+                </div>
+                <p className="mt-1 text-[11px] leading-5 text-zinc-400 dark:text-zinc-500">{t('status.note')}</p>
+                <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                    {sourceRows.map((row) => (
+                        <div
+                            key={row.key}
+                            className="rounded-xl border border-zinc-200/70 bg-white/50 p-3.5 dark:border-white/[0.06] dark:bg-white/[0.02]"
+                        >
+                            <div className="flex items-center justify-between gap-2">
+                                <p className="text-[13px] font-semibold">{t(`source.${row.key}`)}</p>
+                                <StatusBadge t={t} state={row.state}/>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </section>
+        </div>
+    )
+}
+
+function App() {
+    const [language, setLanguage] = useState(() => {
+        const stored = localStorage.getItem(LANGUAGE_KEY)
+        return String(stored || detectLanguage())
+    })
+    const [theme, setTheme] = useState(loadTheme)
+    const [source, setSource] = useState('auto')
+    const [input, setInput] = useState('')
+    const [busy, setBusy] = useState(false)
+    const [searchData, setSearchData] = useState(null)
+    const [detail, setDetail] = useState(null)
+    const [error, setError] = useState(null)
+    const [config, setConfig] = useState(null)
+    const [settingsOpen, setSettingsOpen] = useState(false)
+    const [toast, setToast] = useState('')
+    const [lastRun, setLastRun] = useState(null)
+    const [route, setRoute] = useState(() => window.location.hash.replace(/^#\/?/, ''))
+    const resultRef = useRef(null)
+    const toastTimer = useRef(null)
+
+    const t = useMemo(() => createTranslator(language), [language])
+    const inputMode = useMemo(() => classifyInput(input, source), [input, source])
+    const dark = useMemo(() => isDarkTheme(theme), [theme])
+    const isStatusPage = route === 'status'
+
+    useEffect(() => {
+        const syncRoute = () => setRoute(window.location.hash.replace(/^#\/?/, ''))
+        window.addEventListener('hashchange', syncRoute)
+        return () => window.removeEventListener('hashchange', syncRoute)
+    }, [])
+
+    useEffect(() => {
+        window.scrollTo({top: 0, behavior: 'smooth'})
+    }, [route])
+
+    useEffect(() => {
+        document.documentElement.classList.toggle('dark', dark)
+        document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+    }, [dark])
+
+    useEffect(() => {
+        localStorage.setItem(LANGUAGE_KEY, language)
+        document.documentElement.lang = language
+    }, [language])
+
+    useEffect(() => {
+        localStorage.setItem(THEME_KEY, theme)
+    }, [theme])
+
+    useEffect(() => {
+        getConfig()
+            .then(setConfig)
+            .catch(() => {
+            })
+    }, [])
+
+    useEffect(() => {
+        return () => {
+            if (toastTimer.current) clearTimeout(toastTimer.current)
+        }
+    }, [])
+
+    const showToast = useCallback((message) => {
+        setToast(message)
+        if (toastTimer.current) clearTimeout(toastTimer.current)
+        toastTimer.current = setTimeout(() => setToast(''), 2600)
+    }, [])
+
+    const resetOutput = () => {
+        setError(null)
+        setSearchData(null)
+        setDetail(null)
+    }
+
+    const openSettings = () => {
+        setSettingsOpen(true)
+    }
+
+    const runDirect = async (classified, rawInput) => {
+        const data = await getDetail({
+            source: classified.source === 'auto' ? undefined : classified.source,
+            sid: classified.sid,
+            url: classified.url,
+            type: classified.type,
+        })
+
+        if (!data) throw new ApiClientError('Empty response', {type: 'BAD_RESPONSE'})
+
+        const site = data.site || (classified.source && classified.source !== 'auto' ? classified.source : 'douban')
+        const sid = data.sid || data.melon_id || classified.sid || rawInput
+        setDetail({...data, site, sid})
+        requestAnimationFrame(() => resultRef.current?.scrollIntoView({behavior: 'smooth', block: 'start'}))
+    }
+
+    const runSearch = async (query, searchSource) => {
+        if (!SEARCHABLE.has(searchSource)) {
+            throw new ApiClientError('Source does not support search', {type: 'NEED_LINK'})
+        }
+        const data = await search(query, searchSource, 12)
+        const items = Array.isArray(data?.items) ? data.items : []
+        setSearchData({...data, items})
+    }
+
+    const execute = async (rawInput, selectedSource = source) => {
+        const value = String(rawInput || '').trim()
+        if (!value || busy) return
+
+        const classified = classifyInput(value, selectedSource)
+        if (!classified) return
+
+        if (classified.kind === 'unsupported-search') {
+            setError(new ApiClientError('Source needs a link or ID', {type: 'NEED_LINK'}))
+            return
+        }
+
+        if (classified.kind === 'mismatch') {
+            setError(
+                new ApiClientError('', {
+                    type: 'SOURCE_MISMATCH',
+                    details: {source: classified.source, detected: classified.detected},
+                }),
+            )
+            return
+        }
+
+        resetOutput()
+        setBusy(true)
+        setLastRun({input: value, source: selectedSource})
+
+        try {
+            if (classified.kind === 'direct') {
+                await runDirect(classified, value)
+            } else {
+                await runSearch(value, classified.source)
+            }
+        } catch (err) {
+            setError(err instanceof ApiClientError ? err : new ApiClientError(err?.message || 'Unknown error'))
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    const handleSubmit = (event) => {
+        event.preventDefault()
+        void execute(input)
+    }
+
+    const handleSelectResult = async (item) => {
+        if (busy) return
+        const {sid, type} = splitSid(item)
+        const targetSource = item.site || source
+        if (!sid) {
+            showToast(t('error.notFound'))
+            return
+        }
+
+        setBusy(true)
+        setError(null)
+        setLastRun({input: `${targetSource}:${sid}`, source: targetSource})
+
+        try {
+            const data = await getDetail({source: targetSource, sid, type})
+            if (!data) {
+                setError(new ApiClientError('Empty response', {type: 'BAD_RESPONSE'}))
+                return
+            }
+            setDetail({...data, site: data.site || targetSource, sid: data.sid || sid})
+            requestAnimationFrame(() => resultRef.current?.scrollIntoView({behavior: 'smooth', block: 'start'}))
+        } catch (err) {
+            setError(err instanceof ApiClientError ? err : new ApiClientError(err?.message || 'Unknown error'))
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    const retry = () => {
+        if (!lastRun) return
+        void execute(lastRun.input, lastRun.source)
+    }
+
+    const copyText = async (text, successMessage) => {
+        if (!text) return
+        try {
+            await navigator.clipboard.writeText(text)
+            showToast(successMessage || t('action.copied'))
+        } catch {
+            showToast(t('copy.failed'))
+        }
+    }
+
+    const resetAll = () => {
+        setInput('')
+        resetOutput()
+        setLastRun(null)
+    }
+
+    const resultFormat = detail?.format || ''
+    const resultMeta = useMemo(() => {
+        if (!resultFormat) return ''
+        return t('result.meta', {
+            chars: resultFormat.length.toLocaleString(),
+            lines: resultFormat.split('\n').length.toLocaleString(),
+        })
+    }, [resultFormat, t])
+
+    const inputBadge = inputMode
+        ? inputMode.kind === 'direct' || inputMode.kind === 'mismatch'
+            ? t('mode.direct')
+            : inputMode.kind === 'search'
+                ? t('mode.search')
+                : t('mode.auto')
+        : t('mode.auto')
+
+    return (
+        <div className="app-bg min-h-screen text-zinc-900 dark:text-zinc-50">
+            <div className="relative z-10">
+                <header
+                    className="sticky top-0 z-30 border-b border-zinc-200/60 bg-white/60 backdrop-blur-xl dark:border-white/[0.06] dark:bg-zinc-950/50">
+                    <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-3 px-5 sm:px-8">
+                        <a href="/" className="group flex min-w-0 items-center gap-2.5">
+                            <img
+                                src="/logo.webp"
+                                alt=""
+                                className="h-9 w-9 flex-none rounded-full object-contain transition-transform group-hover:scale-105 dark:invert"
+                            />
+                            <span className="flex items-baseline gap-2">
+                <span className="truncate text-[15px] font-semibold tracking-tight">{t('app.title')}</span>
+                <span
+                    className="hidden rounded-full border border-zinc-200/80 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400 dark:border-white/10 dark:text-zinc-500 sm:inline">
+                  v{VERSION}
+                </span>
+              </span>
+                        </a>
+
+                        <nav className="flex flex-none items-center gap-1.5">
+                            <LanguageMenu language={language} onChange={setLanguage} t={t}/>
+                            <button
+                                type="button"
+                                onClick={() => setTheme(dark ? 'light' : 'dark')}
+                                className="flex h-9 w-9 items-center justify-center rounded-full border border-transparent text-zinc-500 transition hover:border-zinc-200/80 hover:bg-white/70 hover:text-zinc-900 dark:text-zinc-400 dark:hover:border-white/10 dark:hover:bg-white/5 dark:hover:text-white"
+                                title={t('theme.toggle')}
+                                aria-label={t('theme.toggle')}
+                            >
+                                <Icon name={dark ? 'sun' : 'moon'} className="h-4 w-4"/>
+                            </button>
+                            <a
+                                href="https://github.com/rabbitwit/PT-Gen-Refactor"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="hidden h-9 w-9 items-center justify-center rounded-full border border-transparent text-zinc-500 transition hover:border-zinc-200/80 hover:bg-white/70 hover:text-zinc-900 dark:text-zinc-400 dark:hover:border-white/10 dark:hover:bg-white/5 dark:hover:text-white sm:flex"
+                                title={t('nav.github')}
+                                aria-label={t('nav.github')}
+                            >
+                                <Icon name="github" className="h-4 w-4"/>
+                            </a>
+                            <button
+                                type="button"
+                                onClick={openSettings}
+                                className="flex h-9 w-9 items-center justify-center rounded-full border border-transparent text-zinc-500 transition hover:border-zinc-200/80 hover:bg-white/70 hover:text-zinc-900 dark:text-zinc-400 dark:hover:border-white/10 dark:hover:bg-white/5 dark:hover:text-white"
+                                title={t('nav.settings')}
+                                aria-label={t('nav.settings')}
+                            >
+                                <Icon name="settings" className="h-4 w-4"/>
+                            </button>
+                        </nav>
+                    </div>
+                </header>
+
+                <main className="mx-auto w-full max-w-6xl px-5 pb-24 pt-12 sm:px-8 sm:pt-20">
+                    {isStatusPage ? (
+                        <StatusPage t={t} language={language} initialConfig={config}/>
+                    ) : (
+                        <>
+                            <section className="mx-auto max-w-5xl text-center">
+            <span
+                className="inline-flex items-center gap-2 rounded-full border border-zinc-200/80 bg-white/70 px-3 py-1 text-[11px] font-medium text-zinc-500 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5 dark:text-zinc-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 shadow-[0_0_10px_2px_rgba(99,102,241,0.45)]"/>
+                {t('app.badge')}
+            </span>
+                                <p className="mx-auto mt-5 max-w-3xl text-sm leading-7 text-zinc-500 dark:text-zinc-400 sm:text-base">
+                                    {t('app.subtitle')}
+                                </p>
+                            </section>
+
+                            <section className="relative z-20 mx-auto mt-10 max-w-5xl">
+                                <form onSubmit={handleSubmit}>
+                                    <div
+                                        className="card group/search overflow-visible p-2 transition duration-200 focus-within:border-indigo-300/70 focus-within:shadow-[0_20px_50px_-28px_rgba(79,70,229,0.55)] dark:focus-within:border-indigo-400/25">
+                                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                                            <div
+                                                className="flex min-w-0 flex-1 items-center gap-3 rounded-[1.15rem] bg-zinc-50/80 px-3.5 py-1.5 dark:bg-white/[0.04] sm:py-2">
+                    <span
+                        className="flex h-9 w-9 flex-none items-center justify-center rounded-full bg-white text-zinc-400 shadow-sm dark:bg-white/8 dark:text-zinc-500">
+                      <Icon name="search" className="h-4 w-4"/>
+                    </span>
+                                                <label htmlFor="resource-input" className="sr-only">
+                                                    {t('input.label')}
+                                                </label>
+                                                <input
+                                                    id="resource-input"
+                                                    type="text"
+                                                    value={input}
+                                                    onChange={(event) => setInput(event.target.value)}
+                                                    placeholder={t('input.placeholder')}
+                                                    autoComplete="off"
+                                                    spellCheck="false"
+                                                    className="h-11 w-full min-w-0 bg-transparent text-[15px] text-zinc-900 outline-none placeholder:text-zinc-400 dark:text-zinc-50 dark:placeholder:text-zinc-500"
+                                                />
+                                                {input ? (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setInput('')}
+                                                        aria-label={t('action.clear')}
+                                                        title={t('action.clear')}
+                                                        className="flex h-7 w-7 flex-none items-center justify-center rounded-full text-zinc-400 transition hover:bg-white hover:text-zinc-700 dark:hover:bg-white/10 dark:hover:text-zinc-200"
+                                                    >
+                                                        <Icon name="x" className="h-3.5 w-3.5"/>
+                                                    </button>
+                                                ) : null}
+                                            </div>
+
+                                            <div className="flex items-center gap-1.5 px-0.5 pb-0.5 sm:pr-0.5 sm:pb-0">
+                                                <SourceMenu value={source} onChange={setSource} t={t}/>
+                                                <button
+                                                    type="submit"
+                                                    disabled={busy || !input.trim()}
+                                                    className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-indigo-600 px-5 text-[13px] font-semibold text-white shadow-[0_10px_24px_-12px_rgba(79,70,229,0.9)] transition hover:bg-indigo-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/60 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-indigo-500 dark:hover:bg-indigo-400 sm:h-11 sm:flex-none sm:px-5"
+                                                >
+                                                    {busy ? (
+                                                        <>
+                                                            <span
+                                                                className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"/>
+                                                            <span>{t('action.searching')}</span>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <Icon name="sparkles" className="h-4 w-4"/>
+                                                            <span>{t('action.search')}</span>
+                                                        </>
+                                                    )}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </form>
+                                <p className="mt-3 text-center text-[12px] text-zinc-400 dark:text-zinc-500">
+                                    {inputBadge} · {t('input.hint')}
+                                </p>
+                            </section>
+
+                            {(error || (busy && !detail) || searchData || detail) && (
+                                <div className="mx-auto mt-10 max-w-5xl space-y-4">
+                                    {error && (
+                                        <section
+                                            className="rise card border-red-200/70 bg-red-50/80 p-5 dark:border-red-500/20 dark:bg-red-500/[0.07]">
+                                            <div className="flex gap-3">
+                    <span
+                        className="mt-0.5 flex h-8 w-8 flex-none items-center justify-center rounded-full bg-red-100 text-red-600 dark:bg-red-500/15 dark:text-red-300">
+                      <Icon name="alert" className="h-4 w-4"/>
+                    </span>
+                                                <div className="min-w-0 flex-1">
+                                                    <p className="text-sm font-semibold text-red-800 dark:text-red-200">{t('error.title')}</p>
+                                                    <p className="mt-0.5 text-sm leading-6 text-red-700 dark:text-red-300/90">{errorText(error, t)}</p>
+                                                    {error.message && error.message !== errorText(error, t) && (
+                                                        <p className="mt-1 break-words font-mono text-[11px] text-red-500/90 dark:text-red-300/70">
+                                                            {error.message}
+                                                        </p>
+                                                    )}
+                                                    {lastRun && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={retry}
+                                                            className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-500"
+                                                        >
+                                                            <Icon name="refresh" className="h-3.5 w-3.5"/>
+                                                            {t('action.retry')}
+                                                        </button>
+                                                    )}
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setError(null)}
+                                                    className="flex h-7 w-7 flex-none items-center justify-center rounded-lg text-red-400 transition hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-500/20"
+                                                    aria-label={t('action.close')}
+                                                >
+                                                    <Icon name="x" className="h-4 w-4"/>
+                                                </button>
+                                            </div>
+                                        </section>
+                                    )}
+
+                                    {busy && !detail && (
+                                        <section className="card p-6">
+                                            <div className="flex items-center gap-3">
+                                                <span
+                                                    className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-200 border-t-indigo-500 dark:border-white/10 dark:border-t-indigo-400"/>
+                                                <p className="text-sm text-zinc-600 dark:text-zinc-300">{t('status.opening')}</p>
+                                            </div>
+                                            <div className="mt-4 space-y-2.5">
+                                                <div
+                                                    className="h-2.5 w-2/5 animate-pulse rounded-full bg-zinc-200/80 dark:bg-white/10"/>
+                                                <div
+                                                    className="h-2.5 w-full animate-pulse rounded-full bg-zinc-200/60 dark:bg-white/[0.07]"/>
+                                                <div
+                                                    className="h-2.5 w-4/5 animate-pulse rounded-full bg-zinc-200/60 dark:bg-white/[0.07]"/>
+                                            </div>
+                                        </section>
+                                    )}
+
+                                    {searchData && (
+                                        <section className="rise card overflow-hidden">
+                                            <div
+                                                className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200/70 px-5 py-4 dark:border-white/[0.06] sm:px-6">
+                                                <div>
+                                                    <h2 className="text-base font-semibold">{t('search.title')}</h2>
+                                                    <p className="mt-0.5 text-[11px] text-zinc-400 dark:text-zinc-500">{t('search.subtitle')}</p>
+                                                </div>
+                                                <div className="flex items-center gap-1.5">
+                      <span
+                          className="rounded-full bg-zinc-100 px-2.5 py-1 text-[11px] font-medium text-zinc-500 dark:bg-white/5 dark:text-zinc-400">
+                        {t('search.count', {count: searchData.items?.length ?? 0})}
+                      </span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={resetAll}
+                                                        title={t('action.clear')}
+                                                        aria-label={t('action.clear')}
+                                                        className="inline-flex h-7 items-center gap-1 rounded-full px-2 text-[11px] font-medium text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-white/5 dark:hover:text-zinc-200"
+                                                    >
+                                                        <Icon name="trash" className="h-3 w-3"/>
+                                                        {t('action.clear')}
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            {searchData.items?.length ? (
+                                                <ul className="divide-y divide-zinc-200/60 dark:divide-white/[0.05]">
+                                                    {searchData.items.map((item, index) => {
+                                                        const rating = formatRating(item.rating)
+                                                        const siteLabel = t(`source.${item.site}`)
+                                                        return (
+                                                            <li key={`${item.site || 'item'}-${item.sid || index}`}>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleSelectResult(item)}
+                                                                    disabled={busy}
+                                                                    className="group flex w-full items-center gap-3.5 px-4 py-3.5 text-left transition hover:bg-zinc-50 disabled:opacity-60 dark:hover:bg-white/[0.04] sm:px-5"
+                                                                >
+                              <span
+                                  className="flex h-12 w-12 flex-none items-center justify-center overflow-hidden rounded-xl border border-zinc-200/70 bg-zinc-100 text-sm font-semibold text-zinc-400 dark:border-white/10 dark:bg-white/5 dark:text-zinc-500">
+                                {item.poster ? (
+                                    <img src={item.poster} alt="" className="h-full w-full object-cover"
+                                         loading="lazy"/>
+                                ) : (
+                                    (item.title || '?').slice(0, 1)
+                                )}
+                              </span>
+                                                                    <span className="min-w-0 flex-1">
+                                <span className="flex flex-wrap items-center gap-2">
+                                  <span
+                                      className="truncate text-sm font-medium text-zinc-900 group-hover:text-indigo-600 dark:text-zinc-100 dark:group-hover:text-indigo-300">
+                                    {item.title}
+                                  </span>
+                                    {item.year && <span className="text-[11px] text-zinc-400">{item.year}</span>}
+                                    {rating && (
+                                        <span
+                                            className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-300">
+                                      ★ {rating}
+                                    </span>
+                                    )}
+                                </span>
+                                <span className="mt-0.5 block truncate text-[11px] text-zinc-400 dark:text-zinc-500">
+                                  {item.subtitle || item.abstract || item.site}
+                                </span>
+                              </span>
+                                                                    <span
+                                                                        className="flex flex-none items-center gap-2 text-xs text-zinc-400">
+                                {siteLabel !== `source.${item.site}` && (
+                                    <span
+                                        className="hidden rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-500 dark:bg-white/5 dark:text-zinc-400 sm:inline">
+                                    {siteLabel}
+                                  </span>
+                                )}
+                                                                        <Icon
+                                                                            name="chevron"
+                                                                            className="h-4 w-4 transition group-hover:translate-x-0.5 group-hover:text-indigo-500"
+                                                                        />
+                              </span>
+                                                                </button>
+                                                            </li>
+                                                        )
+                                                    })}
+                                                </ul>
+                                            ) : (
+                                                <div className="px-4 py-12 text-center">
+                                                    <p className="text-sm font-medium text-zinc-700 dark:text-zinc-200">{t('search.empty')}</p>
+                                                    <p className="mt-1 text-[11px] text-zinc-400 dark:text-zinc-500">{t('search.emptyHint')}</p>
+                                                </div>
+                                            )}
+                                        </section>
+                                    )}
+
+                                    {detail && (
+                                        <section ref={resultRef} className="scroll-mt-24">
+                                            <div className="rise card overflow-hidden">
+                                                <div
+                                                    className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-200/70 px-5 py-4 dark:border-white/[0.06] sm:px-6 sm:py-5">
+                                                    <div className="min-w-0">
+                                                        <div className="flex items-center gap-2">
+                          <span
+                              className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                            <Icon name="check" className="h-3.5 w-3.5"/>
+                          </span>
+                                                            <h2 className="text-base font-semibold">{t('result.title')}</h2>
+                                                        </div>
+                                                        <div
+                                                            className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
+                          <span
+                              className="rounded-full bg-indigo-500/10 px-2.5 py-1 font-medium text-indigo-600 dark:text-indigo-300">
+                            {t('result.source')} · {detail.site ? t(`source.${detail.site}`) : '—'}
+                          </span>
+                                                            <span
+                                                                className="rounded-full bg-zinc-100 px-2.5 py-1 font-mono text-zinc-500 dark:bg-white/5 dark:text-zinc-400">
+                            {t('result.id')} · {detail.sid || detail.melon_id || '—'}
+                          </span>
+                                                            {resultMeta && <span
+                                                                className="text-zinc-400 dark:text-zinc-500">{resultMeta}</span>}
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex flex-none items-center gap-1.5">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => copyText(detail?.format_copy || resultFormat)}
+                                                            disabled={!resultFormat}
+                                                            className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-zinc-900 px-3 text-xs font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
+                                                        >
+                                                            <Icon name="copy" className="h-3.5 w-3.5"/>
+                                                            {t('action.copy')}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={resetAll}
+                                                            title={t('action.clear')}
+                                                            aria-label={t('action.clear')}
+                                                            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-zinc-200 px-3 text-xs font-semibold text-zinc-500 transition hover:bg-zinc-100 hover:text-red-600 dark:border-white/10 dark:text-zinc-400 dark:hover:bg-white/5 dark:hover:text-red-400"
+                                                        >
+                                                            <Icon name="trash" className="h-3.5 w-3.5"/>
+                                                            {t('action.clear')}
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                <div className="p-5 sm:p-6">
+                                                    {resultFormat ? (
+                                                        <pre
+                                                            className="code-surface whitespace-pre-wrap break-words p-5 text-[13px] leading-6 text-zinc-800 dark:text-zinc-200">
+                          {resultFormat}
+                        </pre>
+                                                    ) : (
+                                                        <div
+                                                            className="rounded-xl border border-dashed border-zinc-300 px-4 py-10 text-center text-sm text-zinc-500 dark:border-white/10 dark:text-zinc-400">
+                                                            {t('result.noFormat')}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </section>
+                                    )}
+                                </div>
+                            )}
+
+                            <section className="mx-auto mt-16 max-w-5xl">
+                                <div className="text-center">
+                                    <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-zinc-400 dark:text-zinc-500">
+                                        {t('steps.kicker')}
+                                    </p>
+                                    <h2 className="mt-2 text-xl font-semibold tracking-tight sm:text-2xl">{t('steps.title')}</h2>
+                                    <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+                                        {t('steps.subtitle')}
+                                    </p>
+                                </div>
+                                <ol className="mt-8 grid gap-3 sm:grid-cols-3">
+                                    {STEP_ITEMS.map((step, index) => (
+                                        <li key={step.key} className="card p-5">
+                                            <div className="flex items-center justify-between">
+                    <span
+                        className="flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-900 text-white dark:bg-white dark:text-zinc-900">
+                      <Icon name={step.icon} className="h-4 w-4"/>
+                    </span>
+                                                <span
+                                                    className="font-mono text-[11px] text-zinc-300 dark:text-zinc-600">0{index + 1}</span>
+                                            </div>
+                                            <h3 className="mt-4 text-sm font-semibold">{t(`steps.${step.key}.title`)}</h3>
+                                            <p className="mt-1.5 text-xs leading-6 text-zinc-500 dark:text-zinc-400">
+                                                {t(`steps.${step.key}.desc`)}
+                                            </p>
+                                        </li>
+                                    ))}
+                                </ol>
+                            </section>
+                        </>
+                    )}
+
+                    <footer
+                        className="mx-auto mt-14 flex max-w-5xl flex-wrap items-center justify-between gap-3 border-t border-zinc-200/70 pt-5 text-[11px] text-zinc-400 dark:border-white/[0.06] dark:text-zinc-500">
+                        <p>{t('footer.note')}</p>
+                        <div className="flex items-center gap-4">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    window.location.hash = '/status'
+                                }}
+                                className={`transition hover:text-indigo-600 dark:hover:text-indigo-300 ${
+                                    isStatusPage ? 'text-indigo-600 dark:text-indigo-300' : ''
+                                }`}
+                            >
+                                {t('footer.status')}
+                            </button>
+                            <span className="font-mono">v{VERSION}</span>
+                        </div>
+                    </footer>
+                </main>
+            </div>
+
+            {settingsOpen && (
+                <div className="fixed inset-0 z-50 flex items-end justify-center p-4 sm:items-center">
+                    <button
+                        type="button"
+                        className="absolute inset-0 bg-zinc-950/50 backdrop-blur-sm"
+                        onClick={() => setSettingsOpen(false)}
+                        aria-label={t('action.close')}
+                    />
+                    <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label={t('settings.title')}
+                        className="rise card relative w-full max-w-md overflow-hidden bg-white/95 p-5 dark:bg-zinc-900/95"
+                    >
+                        <div className="flex items-center justify-between">
+                            <h2 className="text-base font-semibold tracking-tight">{t('settings.title')}</h2>
+                            <button
+                                type="button"
+                                onClick={() => setSettingsOpen(false)}
+                                className="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-white/5 dark:hover:text-zinc-200"
+                                aria-label={t('action.close')}
+                            >
+                                <Icon name="x" className="h-4 w-4"/>
+                            </button>
+                        </div>
+
+                        <div className="mt-5 space-y-5">
+                            <div>
+                                <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+                                    {t('settings.language')}
+                                </p>
+                                <div className="grid grid-cols-2 gap-1.5">
+                                    {LANGUAGES.map((item) => {
+                                        const active = language === item.code
+                                        return (
+                                            <button
+                                                key={item.code}
+                                                type="button"
+                                                onClick={() => setLanguage(item.code)}
+                                                className={`flex items-center justify-between rounded-xl border px-3 py-2 text-[13px] transition ${
+                                                    active
+                                                        ? 'border-zinc-900 bg-zinc-900 text-white dark:border-white dark:bg-white dark:text-zinc-900'
+                                                        : 'border-zinc-200/80 text-zinc-600 hover:bg-zinc-50 dark:border-white/10 dark:text-zinc-300 dark:hover:bg-white/5'
+                                                }`}
+                                            >
+                                                <span>{item.label}</span>
+                                                {active && <Icon name="check" className="h-3.5 w-3.5"/>}
+                                            </button>
+                                        )
+                                    })}
+                                </div>
+                            </div>
+
+                            <div>
+                                <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+                                    {t('settings.theme')}
+                                </p>
+                                <div className="flex gap-1.5">
+                                    {['light', 'dark', 'system'].map((option) => (
+                                        <button
+                                            key={option}
+                                            type="button"
+                                            onClick={() => setTheme(option)}
+                                            className={`flex h-9 flex-1 items-center justify-center rounded-xl border text-[13px] transition ${
+                                                theme === option
+                                                    ? 'border-zinc-900 bg-zinc-900 text-white dark:border-white dark:bg-white dark:text-zinc-900'
+                                                    : 'border-zinc-200/80 text-zinc-600 hover:bg-zinc-50 dark:border-white/10 dark:text-zinc-300 dark:hover:bg-white/5'
+                                            }`}
+                                        >
+                                            {t(`settings.theme.${option}`)}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="mt-6 flex justify-end">
+                            <button
+                                type="button"
+                                onClick={() => setSettingsOpen(false)}
+                                className="h-9 rounded-xl bg-zinc-900 px-4 text-sm font-medium text-white transition hover:bg-zinc-800 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
+                            >
+                                {t('action.close')}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {toast && (
+                <div className="pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2">
+                    <div
+                        className="flex items-center gap-2 rounded-full bg-zinc-900 px-4 py-2.5 text-sm text-white shadow-xl shadow-zinc-950/20 dark:bg-white dark:text-zinc-900">
+                        <Icon name="check" className="h-4 w-4"/>
+                        {toast}
+                    </div>
+                </div>
+            )}
+        </div>
+    )
+}
+
+export default App

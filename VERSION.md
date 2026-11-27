@@ -1,6 +1,45 @@
 # 版本更新说明
 
-## v1.0.8 (当前版本)
+## v2.0.0 (当前版本)
+
+### 重构
+
+- 后端迁移到 Hono + TypeScript，统一响应信封为 `{ code, message, data, error, meta }`
+- 前端使用 React 19 重写，支持简中 / 繁中 / English / 日本語 / 한국어
+- 统一详情入口 `GET /api/v1/{provider}/{id}` 与 `/api/v1/search`，覆盖豆瓣、IMDb、Bangumi、TMDB、Trakt、Steam、Melon、红果、QQ 音乐、豆瓣读书
+- 支持 Cloudflare Workers / Vercel / Node.js / Bun / EdgeOne Makers 部署
+- 持久化缓存覆盖各平台：Cloudflare R2 / D1、Vercel Blob、EdgeOne Blob、Node / Bun 本地 `data/cache` 目录
+- 持久层未命中时先查 PT-Gen-Database 静态库（`ENABLED_DATABASE`、`DATABASE_BASE_URL`），再回源上游
+- `DOUBAN_BACKEND_URL` / `IMDB_BACKEND_URL` 支持多个端点（逗号或换行分隔），拿不到数据就试下一个，全部失败再按原逻辑回退或报错
+- 移除旧版 `worker/` 实现
+
+### 接口
+
+- 版本化 REST 面 `/api/v1`：详情 `GET /api/v1/{provider}/{id}`（TMDb / Trakt 也可写 `/api/v1/{provider}/{type}/{id}`），聚合搜索 `/api/v1/search`，各数据源搜索 `/api/v1/{provider}/search`，目录 `/api/v1/providers`，链接 / 关键词解析 `/api/v1/resolve`
+- 参数规范化为 `id` / `type` / `full` / `q` / `source`；`sid` / `site` / `query` 等旧名继续作为兼容别名生效
+- 所有详情入口（含各站点旧路径）共用同一条读取路径：进程内缓存 → 持久层 → 静态数据库 → 回源
+- 旧路径全部保留为别名，OpenAPI 中标记 `deprecated`，缓存键与响应内容与 v1 完全一致
+- 移除 `GET /api/getData`：链接 / 关键词解析改用 `GET /api/v1/resolve`（`url` / `id` / `q`）
+- JSON 成功响应带 `ETag`，支持 `If-None-Match` → `304` 与 `HEAD`；路径尾斜杠以 `308` 重定向到规范地址
+- 已知路径上的不支持方法返回 `405`，并在 `Allow` 头列出可用方法
+- 新增 `GET /openapi.json`（OpenAPI 3.1，别名 `/api/openapi.json`），`GET /docs` 文档页同步更新；`/openapi.json` 在 Cloudflare（`run_worker_first`）、Vercel（rewrite）、EdgeOne（rewrite 到 `/api/openapi.json`）上均可达
+
+### 运行时
+
+- Cloudflare Workers 的 `compatibility_date` 从 `2024-11-01` 提升到 `2025-11-01`
+- IMDb 裸 TCP 通道在按域名建连时不再向 `startTls()` 传 `expectedServerHostname`：本地 `wrangler dev`（workerd）对该选项只打印 `NOSENTRY` 错误，而域名建连本身已由运行时用该域名做 SNI 与证书校验；仅当按 DoH 解析出的 IP 建连时才传，运行时不支持则抛出明确错误交给上层回退
+
+### 安全
+
+- 新增 PoW + HttpOnly 会话认证：浏览器自动解 SHA-256 挑战并换取短期会话，前端不再内置任何长期密钥
+- 外部 API 客户端继续使用 `API_TOKEN`；新增 `SESSION_TTL_SECONDS`、`POW_DIFFICULTY`
+- 移除 `VITE_AUTH_SECRET` 与 `?ts=&sig=` HMAC 方案；`AUTH_SECRET` 仅保存在服务端
+- 会话 Cookie 使用 `HttpOnly; SameSite=Lax`，HTTPS 下自动加 `Secure`
+- 按 IP 与会话 ID 双重限流，并保留边缘 WAF / 限流建议
+- 豆瓣 Cookie 生命周期：登录重定向 / 反爬页被动识别为 `DOUBAN_COOKIE_EXPIRED`，请求前主动健康检查（缓存 10 分钟），支持
+  `DOUBAN_COOKIE_EXPIRES_AT` 与 Telegram 到期前 24 小时告警
+
+## v1.0.8
 
 ### 新增功能
 

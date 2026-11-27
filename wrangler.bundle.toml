@@ -1,0 +1,10 @@
+# 仅用于构建「单文件 API Worker」：不含静态资源，产物可直接在 Cloudflare 控制台上传。
+# 完整应用（含前端）请用 wrangler.toml + npm run deploy:workers。
+#
+# 本地构建：
+#   npx wrangler deploy --dry-run --outdir dist/bundle --config wrangler.bundle.toml
+# 产物：
+#   dist/bundle/index.js
+name = "pt-gen-api-bundle"
+main = "src/index.ts"
+compatibility_date = "2025-11-01"

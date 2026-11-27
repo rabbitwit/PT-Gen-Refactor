@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node"
+    ],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": [
+    "index.ts",
+    "src/**/*.ts",
+    "api/**/*.ts",
+    "node-functions/**/*.ts",
+    "tsup.config.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "public",
+    "frontend",
+    ".wrangler"
+  ]
+}

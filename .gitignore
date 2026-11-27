@@ -12,6 +12,18 @@ dist/
 build/
 .out/
 frontend/dist/
+# 前端构建输出（Vite outDir），由 npm run build:frontend / build:all 生成
+/public/
+.monkeycode
+.monkeycode/
+.ohmyagent
+.ohmyagent/
+
+# Vercel CLI
+.vercel/
+
+# EdgeOne Makers CLI
+.edgeone/
 
 # Environment variables
 .env
@@ -23,8 +35,10 @@ frontend/dist/
 
 # Wrangler local state
 .wrangler/
-wrangler-backup.toml
 wrangler.toml
+wrangler-backup.toml
+wrangler.test.toml
+# wrangler.toml.example is tracked; copy it to wrangler.toml before wrangler dev / deploy
 
 # Logs
 *.log
@@ -43,14 +57,17 @@ Thumbs.db
 .idea/
 .lingma/
 
+# Node / Bun local persistent cache
+data/cache/
+
 # Temporary files
 *.tmp
 *.temp
+.tmp-pw
+.tmp-old-readme.md
 
-# Test files
-worker/src/test/
-
-# Douban backup
-worker/src/api/providers/douban/movie_bak.js
+# Project-specific ignores
 qodana.yaml
 frontend/public/.well-known/
+.vercel
+.env*

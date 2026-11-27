@@ -1,4 +1,9 @@
-name: Build Worker Single File
+# 构建单文件 API Worker。
+#
+# 产物只包含后端（/api/*、/health、/docs、/openapi.json），不含前端静态资源，
+# 用于没有本地构建环境时在 Cloudflare 控制台直接创建 Worker。
+# 需要完整应用（含 UI）请用 wrangler.toml + npm run deploy:workers。
+name: Build Worker API Bundle
 
 on:
   push:
@@ -7,16 +12,23 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+# 同一时间只跑一个，避免并发 force push 覆盖 build 分支
+concurrency:
+  group: build-worker-api-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 15
+
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -24,62 +36,44 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '22'
 
-      - name: Generate package-lock.json if not exists
-        run: |
-          cd worker
-          if [ ! -f package-lock.json ]; then
-            echo "package-lock.json not found, generating one..."
-            npm install --package-lock-only
-          else
-            echo "package-lock.json found"
-          fi
-
+      # 根目录 package-lock.json 不入库，这里用 npm install
       - name: Install dependencies
-        run: |
-          cd worker
-          npm ci
+        run: npm install --no-audit --no-fund
 
-      - name: Create dist directory
+      # wrangler 自己打包 src/index.ts，不需要先跑 tsup
+      - name: Build single-file Worker
         run: |
-          cd worker
-          mkdir -p dist
-
-      - name: Build single file bundle
-        run: |
-          cd worker
-          npx rollup -c
-
-      - name: Create clean build branch with only bundle.js
-        run: |
-          # 创建一个临时目录来保存bundle.js
-          mkdir -p /tmp/build
-          cp worker/dist/bundle.js /tmp/build/bundle.js
-          
-          # 删除远程的build分支（如果存在）
-          git push origin --delete build 2>/dev/null || echo "No remote build branch to delete"
-          
-          # 创建一个孤立的build分支
-          git checkout --orphan build
-          
-          # 清理工作目录
-          git rm -rf --cached . 2>/dev/null || true
-          
-          # 从临时目录复制bundle.js到工作目录
-          cp /tmp/build/bundle.js .
-          
-          # 添加bundle.js到git
-          git add bundle.js
-          
-          # 提交
-          git -c user.name='github-actions[bot]' -c user.email='github-actions[bot]@users.noreply.github.com' commit -m "Auto-build: Single file bundle"
-          
-          # 推送到远程
-          git push -u origin build
+          npx wrangler deploy --dry-run --outdir dist/bundle --config wrangler.bundle.toml
+          cp dist/bundle/index.js bundle.js
+          node -e "const s = require('fs').statSync('bundle.js').size; console.log('bundle.js: ' + (s / 1024).toFixed(1) + ' KiB')"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: worker-bundle
-          path: worker/dist/bundle.js
+          name: worker-api-bundle
+          path: bundle.js
+          if-no-files-found: error
+
+      # PR 不写 build 分支（来自 fork 时 token 也没有写权限）
+      - name: Publish to build branch
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          cp bundle.js /tmp/bundle.js
+
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+          # 孤立的 build 分支，只保留 bundle.js
+          git checkout --orphan build
+          git rm -rf --cached .
+          cp /tmp/bundle.js bundle.js
+          git add bundle.js
+
+          if git diff --cached --quiet; then
+            echo "bundle 无变化，跳过提交"
+          else
+            git commit -m "build: update single-file worker bundle"
+            git push -f origin build
+          fi

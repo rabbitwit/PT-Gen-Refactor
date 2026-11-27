@@ -1,24 +1,54 @@
 {
   "name": "pt-gen-refactor",
-  "author": "Hares",
-  "version": "1.0.8",
-  "description": "Cloudflare Worker for PT-Gen Refactor",
-  "main": "worker/index.js",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "PT-Gen rewritten on Hono + TypeScript. Douban, IMDb, Bangumi, TMDB, Trakt, Steam, Melon, QQ Music and Hongguo metadata with a multi-language UI. Deployable to Cloudflare Workers / Vercel / Node.js / Bun / EdgeOne Makers.",
+  "main": "dist/node.js",
   "scripts": {
-    "dev": "cd worker && npx wrangler dev",
-    "dev:frontend": "cd frontend && npm run dev",
-    "deploy": "cd worker && npx wrangler deploy"
-  },
-  "keywords": [
-    "cloudflare",
-    "worker",
-    "pt-gen"
-  ],
-  "license": "MIT",
-  "devDependencies": {
-    "wrangler": "^4.33.2"
+    "dev": "tsx watch src/node.ts",
+    "dev:bun": "bun run --watch src/bun.ts",
+    "dev:workers": "wrangler dev",
+    "dev:workers:test": "wrangler dev --config wrangler.test.toml --port 8787",
+    "sync-version": "node scripts/sync-version.mjs",
+    "dev:frontend": "npm run sync-version && npm --prefix frontend run dev",
+    "install:frontend": "npm --prefix frontend install --include=dev",
+    "build": "tsup",
+    "build:frontend": "npm run sync-version && node scripts/ensure-frontend-deps.mjs && npm --prefix frontend run build",
+    "build:all": "npm run build:frontend && npm run build",
+    "start": "node dist/node.js",
+    "start:bun": "bun run index.ts",
+    "install:prod": "bun install --production",
+    "typecheck": "tsc --noEmit",
+    "deploy:workers": "npm run build:frontend && wrangler deploy",
+    "deploy:workers:test": "npm run build:frontend && wrangler deploy --config wrangler.test.toml",
+    "deploy:vercel": "npx vercel deploy --prod",
+    "deploy:edgeone": "npx edgeone makers deploy -e production"
   },
   "dependencies": {
-    "cheerio": "^1.1.2"
+    "@edgeone/pages-blob": "^0.0.19",
+    "@hono/node-server": "^2.1.8",
+    "domhandler": "^6.0.1",
+    "domutils": "^4.0.2",
+    "hono": "^4.6.14",
+    "htmlparser2": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "wrangler": "^4.161.0"
+  },
+  "engines": {
+    "node": "26.x"
+  },
+  "trustedDependencies": [
+    "esbuild",
+    "workerd"
+  ],
+  "allowScripts": {
+    "esbuild": true,
+    "workerd": true
   }
 }

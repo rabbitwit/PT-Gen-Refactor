@@ -1,47 +1,62 @@
+# 部署或本地 `wrangler dev` 前请复制为本目录的 wrangler.toml：
+#   cp wrangler.toml.example wrangler.toml
+#   copy wrangler.toml.example wrangler.toml
 name = "pt-gen-refactor"
-main = "worker/index.js"
-compatibility_date = "2025-08-27"
+main = "src/index.ts"
+compatibility_date = "2025-11-01"
 
+# 本项目共享代码只使用 fetch / Web 标准 API；Cloudflare Workers 上的 IMDb 走
+# `cloudflare:sockets` 裸 TCP，不需要 nodejs_compat。
+# compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+# 前端构建产物。API 请求交给 Worker，其余请求直接由静态资源返回。
 [assets]
-directory = "./frontend/dist"
-binding = "ASSETS"
+directory = "./public"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/health", "/health/", "/docs", "/docs/", "/openapi.json", "/trakt/*", "/callback"]
 
-# 环境变量（可选）
-# 注意：敏感信息（API_KEY、TMDB_API_KEY、Cookie、TRAKT_API_CLIENT_ID、AUTH_SECRET 等）应使用 Secrets，不要写在这里
-# 使用命令：wrangler secret put VARIABLE_NAME
-# LOG_LEVEL：日志级别（debug | info | warn | error | none）
-# - debug: 输出所有日志（开发环境推荐）
-# - info:  输出一般信息（默认）
-# - warn:  只输出警告和错误
-# - error: 只输出错误
-# - none:  不输出任何日志
 [vars]
-AUTHOR = "Hares"
-LOG_LEVEL = "none"
+CACHE_TTL_SECONDS = "600"
+RATE_LIMIT_MAX = "60"
+SESSION_TTL_SECONDS = "1800"
+POW_DIFFICULTY = "12"
+# 设为 "false" 关闭 R2 / D1 持久化缓存层；进程内缓存不受影响
 ENABLED_CACHE = "true"
-#API_KEY = "your_api_key"
-#TMDB_API_KEY = "your_tmdb_api_key"
-#DOUBAN_COOKIE = 'your_douban_cookie'
-#QQ_COOKIE = 'your_qq_music_cookie'
-#TRAKT_API_CLIENT_ID = "your_trakt_api_client_id"
-#TRAKT_APP_NAME = "your_trakt_api_app_name"
-#AUTH_SECRET = "your_auth_secret"  # HMAC 签名认证密钥（前后端必须一致）
+# 设为 "false" 关闭持久层未命中时的 PT-Gen-Database 静态库回退
+ENABLED_DATABASE = "true"
+# 可选：静态库镜像地址（逗号分隔多个）。默认 jsDelivr -> GitHub Raw
+# DATABASE_BASE_URL = "https://cdn.jsdelivr.net/gh/rabbitwit/PT-Gen-Database@main"
 
+# ---------------------------------------------------------------------------
+# 鉴权与上游密钥不要写进本文件。
+# 本地：复制为 `.dev.vars`（Wrangler 会自动注入）
+# 远端：`npx wrangler secret put <NAME>`
+#
+# API_TOKEN
+# AUTH_SECRET
+# DOUBAN_BACKEND_URL / DOUBAN_BACKEND_TOKEN / DOUBAN_COOKIE / DOUBAN_COOKIE_EXPIRES_AT
+# TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
+# IMDB_BACKEND_URL / IMDB_BACKEND_TOKEN / IMDB_COOKIE
+# 后端地址支持多个端点，逗号或换行分隔；拿不到数据就试下一个
+# TMDB_API_KEY / TRAKT_API_CLIENT_ID（Trakt 必填，否则拉不到数据） / QQ_COOKIE
+# ---------------------------------------------------------------------------
 
-# R2 存储桶配置（可选，选择一种缓存方式即可） 如需使用 R2 存储桶缓存删除参数前的 # 符号
-#[[r2_buckets]]
-#binding = "R2_BUCKET"
-#bucket_name = "pt-gen-cache"
+# 持久化缓存（可选）：绑定后详情数据会同时写入 R2 与 D1。
+# 创建资源：
+#   npx wrangler r2 bucket create pt-gen-cache
+#   npx wrangler d1 create pt-gen-cache
+#   npx wrangler d1 execute pt-gen-cache --command "CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, data TEXT NOT NULL, timestamp INTEGER NOT NULL);"
+#
+# 绑定必须写在所有 [vars] 之后。
 
-# D1 数据库配置（可选，选择一种缓存方式即可） 如需使用 D1 数据库缓存删除参数前的 # 符号
-#[[d1_databases]]
-#binding = "DB"
-#database_name = "pt-gen-cache"
-#database_id = ""
+# [[r2_buckets]]
+# binding = "R2_BUCKET"
+# bucket_name = "pt-gen-cache"
 
-# 日志配置
-#[observability]
-#[observability.logs]
-#enabled = true
-#head_sampling_rate = 1
-#invocation_logs = true
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "pt-gen-cache"
+# database_id = "替换为 wrangler d1 create 输出的 database_id"

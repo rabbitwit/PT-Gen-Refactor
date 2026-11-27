@@ -1,0 +1,41 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "github": {
+    "silent": true
+  },
+  "framework": null,
+  "installCommand": "env -u npm_config_cache-dir -u npm_config_cache_dir npm install --no-audit --no-fund && env -u npm_config_cache-dir -u npm_config_cache_dir npm --prefix frontend install --include=dev --no-audit --no-fund",
+  "buildCommand": "env -u npm_config_cache-dir -u npm_config_cache_dir npm run build:all",
+  "outputDirectory": "public",
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/docs",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/openapi.json",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/trakt/(.*)",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/callback",
+      "destination": "/api/index"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+# 面板（Pterodactyl / Pelican / Bot-Hosting）启动命令是 `bun install`，不会带 --production。
+# 跳过 wrangler 等 devDependencies，避免 Bun 1.4.x 解压 @cloudflare/workers-utils 时
+# 偶发 ENOENT 把进程打崩。
+#
+# 本地开发请用 `npm install`。若必须用 Bun 安装开发依赖：
+#   bun install --production=false
+[install]
+production = true
