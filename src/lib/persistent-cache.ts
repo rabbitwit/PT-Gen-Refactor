@@ -50,7 +50,6 @@ const EO_BINDING_KEYS = ['BLOB', 'EO_BLOB', 'EO_BUCKET', 'BUCKET', 'COS', 'STORA
 const VERCEL_BLOB_API = 'https://vercel.com/api/blob'
 /** 与官方 `@vercel/blob` 当前协议版本对齐，过旧会被服务端拒绝 */
 const VERCEL_BLOB_API_VERSION = '13'
-const PERSIST_TIMEOUT_MS = 8_000
 
 /** 落盘格式：带上写入时间，读出来时才能判断是否过期 */
 interface CacheEnvelope<T> {
@@ -367,6 +366,8 @@ async function readD1(store: CacheStore, key: string): Promise<string | undefine
     if (!store.d1) return undefined
     try {
         const row = await store.d1
+            // D1 是运行时绑定，IDEA 没有对应数据源可做 SQL 校验
+            // noinspection SqlNoDataSourceInspection
             .prepare('SELECT data FROM cache WHERE key = ?')
             .bind(key)
             .first<{ data?: string }>()
@@ -417,7 +418,8 @@ async function readBlob(store: CacheStore, key: string): Promise<string | undefi
                     }
                 }
                 if (direct.status !== 404 && direct.status !== 403 && direct.status !== 401) {
-                    throw new Error(`blob get ${await blobErrorDetail(direct)}`)
+                    console.warn(`[Cache] Blob read failed for ${candidate}: blob get ${await blobErrorDetail(direct)}`)
+                    return undefined
                 }
             }
 
@@ -544,6 +546,8 @@ async function writeD1(store: CacheStore, key: string, json: string): Promise<vo
 
     try {
         await store.d1
+            // D1 是运行时绑定，IDEA 没有对应数据源可做 SQL 校验
+            // noinspection SqlNoDataSourceInspection
             .prepare('INSERT OR REPLACE INTO cache (key, data, timestamp) VALUES (?, ?, ?)')
             .bind(key, json, Date.now())
             .run()
@@ -568,7 +572,10 @@ async function writeBlob(store: CacheStore, key: string, json: string): Promise<
             },
             body: json,
         })
-        if (!response.ok) throw new Error(`blob put ${await blobErrorDetail(response)}`)
+        if (!response.ok) {
+            console.warn(`[Cache] Blob write failed for ${key}: blob put ${await blobErrorDetail(response)}`)
+            return
+        }
         console.info(`[Cache Write] Blob for: ${key}`)
     } catch (error) {
         console.warn(`[Cache] Blob write failed for ${key}:`, describe(error))

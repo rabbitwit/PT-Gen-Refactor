@@ -1,3 +1,4 @@
+/* global __APP_VERSION__ */
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react'
 import './App.css'
 import {ApiClientError, getConfig, getDetail, request, search} from './api'
@@ -805,13 +806,12 @@ function App() {
     }
 
     const resultFormat = detail?.format || ''
-    const resultMeta = useMemo(() => {
-        if (!resultFormat) return ''
-        return t('result.meta', {
+    const resultMeta = resultFormat
+        ? t('result.meta', {
             chars: resultFormat.length.toLocaleString(),
             lines: resultFormat.split('\n').length.toLocaleString(),
         })
-    }, [resultFormat, t])
+        : ''
 
     const inputBadge = inputMode
         ? inputMode.kind === 'direct' || inputMode.kind === 'mismatch'
