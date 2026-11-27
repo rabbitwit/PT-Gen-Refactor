@@ -1140,7 +1140,7 @@ function App() {
                                                     <div className="flex flex-none items-center gap-1.5">
                                                         <button
                                                             type="button"
-                                                            onClick={() => copyText(detail?.format_copy || resultFormat)}
+                                                            onClick={() => copyText(resultFormat)}
                                                             disabled={!resultFormat}
                                                             className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-zinc-900 px-3 text-xs font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
                                                         >

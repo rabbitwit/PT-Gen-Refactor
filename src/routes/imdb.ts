@@ -207,7 +207,7 @@ imdb.get('/:id', async (c) => {
         },
     })
 
-    // 旧版缓存条目没有 format / format_copy，命中时补算，保证两种入口形状一致
+    // 旧版缓存条目没有 format，命中时补算，保证两种入口形状一致
     const value = ensureFormat('imdb', result.value as unknown as Record<string, unknown>) as unknown as TitleCacheValue
 
     return sendSuccess(value, {requestId, startedAt, cached: result.layer !== undefined, source: channel}, {

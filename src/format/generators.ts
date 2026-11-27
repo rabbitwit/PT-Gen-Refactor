@@ -274,13 +274,9 @@ const plainFieldLabel = (name) => `${FIELD_MARKER}${name}${ENGLISH_INDENT}`;
 /**
  * 把英文标签补齐到最长的字段名，并把续行缩进对齐到值列。
  *
- * - `ascii`：页面预览用，半角空格 padEnd
- * - `fullwidth`：复制用，回到最初的 `◉　Name:　value`，不做列对齐
- *
  * @param text 内部仍带 ENGLISH_INDENT 占位符的文本
- * @param [padStyle="ascii"] 补齐方式
  */
-const alignEnglishFieldLabels = (text, padStyle = "ascii") => {
+const alignEnglishFieldLabels = (text) => {
     const lines = String(text).split("\n");
     const markerLen = FIELD_MARKER.length;
 
@@ -293,24 +289,6 @@ const alignEnglishFieldLabels = (text, padStyle = "ascii") => {
         }
     }
     if (maxNameWidth === 0) return text;
-
-    if (padStyle === "fullwidth") {
-        return lines
-            .map((line) => {
-                if (line.startsWith(ENGLISH_INDENT)) {
-                    return "　　　　" + line.slice(ENGLISH_INDENT.length);
-                }
-
-                const index = line.indexOf(ENGLISH_INDENT);
-                if (index <= 0) return line;
-
-                const name = line.slice(markerLen, index);
-                const value = line.slice(index + ENGLISH_INDENT.length).trimStart();
-                if (!value) return `${FIELD_MARKER}${name}`;
-                return `${FIELD_MARKER}${name}:　${value}`;
-            })
-            .join("\n");
-    }
 
     // `◉　` 计作 2 格：列宽必须按视觉格数算，否则续行会左偏一格。
     const keyWidth = FIELD_MARKER_WIDTH + maxNameWidth + 1;
@@ -706,10 +684,9 @@ export const generateDoubanFormat = (raw) => {
  * 包括海报、标题、评分、演员、工作人员、简介的结构化布局。
  *
  * @param raw - The media data object containing IMDb metadata (包含 IMDb 元数据的媒体数据对象)
- * @param padStyle - Label padding style (`ascii` or `fullwidth`)
  * @returns The formatted description string with BBCode tags and English labels (带有 BBCode 标签和英文标签的格式化描述字符串)
  */
-export const generateImdbFormat = (raw, padStyle = "ascii") => {
+export const generateImdbFormat = (raw) => {
     const data = unwrapMediaData(raw);
     const lines = [];
     const releaseInfo = [];
@@ -886,7 +863,7 @@ export const generateImdbFormat = (raw, padStyle = "ascii") => {
         );
     }
 
-    return alignEnglishFieldLabels(lines.join("\n").trim(), padStyle);
+    return alignEnglishFieldLabels(lines.join("\n").trim());
 };
 
 /**
@@ -1458,10 +1435,9 @@ const capitalizeWords = (value) =>
  * 区分电影和电视剧，为每种类型显示适当的元数据。
  *
  * @param raw - The media data object containing Trakt metadata (包含 Trakt 元数据的媒体数据对象)
- * @param padStyle - Label padding style (`ascii` or `fullwidth`)
  * @returns The formatted Trakt description text (格式化后的 Trakt 描述文本)
  */
-export const generateTraktFormat = (raw, padStyle = 'ascii') => {
+export const generateTraktFormat = (raw) => {
     if (!raw || typeof raw !== 'object') {
         return '';
     }
@@ -1568,5 +1544,5 @@ export const generateTraktFormat = (raw, padStyle = 'ascii') => {
         );
     }
 
-    return alignEnglishFieldLabels(lines.join('\n').trim(), padStyle);
+    return alignEnglishFieldLabels(lines.join('\n').trim());
 };
